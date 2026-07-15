@@ -34,6 +34,21 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Prepare pinned Xaero 1.17.1 test mods
+        run: |
+          mkdir -p xaeromap-origin
+          curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
+            --output xaeromap-origin/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar \
+            https://edge.forgecdn.net/files/3861/263/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar
+          curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
+            --output xaeromap-origin/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar \
+            https://edge.forgecdn.net/files/3861/253/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar
+          {
+            echo "6bd3a5ee416d2dc96881d4b54fda9dba870cec8b8cda03f64594f60bdb02668e  xaeromap-origin/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar"
+            echo "98deada43306e4fddc6b45489e1546a66dfba00fa80b12eedb3624fad547f771  xaeromap-origin/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+          } > xaeromap-origin/SHA256SUMS
+          sha256sum --check xaeromap-origin/SHA256SUMS
+
       - name: Build
         run: ./gradlew build
 
