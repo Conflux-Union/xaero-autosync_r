@@ -18,6 +18,8 @@ interface XaeroWaypointBridge {
 
 	void save(Object world) throws ReflectiveOperationException;
 
+	void clearWaypointScreenSelection() throws ReflectiveOperationException;
+
 	void removeSet(Object world, String setKey) throws ReflectiveOperationException;
 
 	final class Target {

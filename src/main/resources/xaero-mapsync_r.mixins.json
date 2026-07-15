@@ -11,7 +11,8 @@
 		"PrimedTntActivityMixin"
 	],
 	"client": [
-		"XaeroWaypointListMixin"
+		"XaeroWaypointListMixin",
+		"XaeroWaypointScreenMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

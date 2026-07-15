@@ -239,6 +239,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				}
 			}
 			if (changed) {
+				bridge.clearWaypointScreenSelection();
 				bridge.save(target.world());
 			}
 			XaeroMapsync_r.LOGGER.info("Xaero waypoint reconcile completed: created={}, updated={}, deleted={}, ignored={}, saved={}", created, updated, deleted, ignored, changed);

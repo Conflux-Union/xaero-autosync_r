@@ -52,6 +52,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals(4, result.ignored());
 		assertTrue(result.saved());
 		assertEquals(1, bridge.saveCount);
+		assertEquals(1, bridge.clearSelectionCount);
 		assertEquals(3, bridge.publicPoints().size());
 		assertSame(privatePoint, bridge.publicPoints().get(0));
 		assertSame(updatePoint, bridge.publicPoints().get(1));
@@ -72,6 +73,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 
 		assertEquals(XaeroWaypointReconcileResult.Outcome.NO_CHANGES, result.outcome());
 		assertEquals(0, bridge.saveCount);
+		assertEquals(0, bridge.clearSelectionCount);
 	}
 
 	@Test
@@ -401,6 +403,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		private String currentSet = "gui.xaero_default";
 		private int addSetCount;
 		private int saveCount;
+		private int clearSelectionCount;
 		private boolean failOnTarget;
 		private boolean failOnSave;
 		private SelectedWaypoint selected;
@@ -472,6 +475,11 @@ final class ReflectiveXaeroWaypointAdapterTest {
 				throw new ReflectiveOperationException("save failure");
 			}
 			saveCount++;
+		}
+
+		@Override
+		public void clearWaypointScreenSelection() {
+			clearSelectionCount++;
 		}
 
 		@Override

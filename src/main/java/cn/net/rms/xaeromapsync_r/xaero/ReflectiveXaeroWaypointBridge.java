@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentSkipListSet;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceKey;
 
@@ -27,6 +28,7 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Class<?> waypointScreenClass;
 	private final Method getSelectedWaypoints;
 	private final Field displayedWorld;
+	private final Field selectedListSet;
 	private final Method getSettings;
 	private final Method saveWaypoints;
 	private final Constructor<?> waypointConstructor;
@@ -72,6 +74,8 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		getSelectedWaypoints.setAccessible(true);
 		displayedWorld = waypointScreenClass.getDeclaredField("displayedWorld");
 		displayedWorld.setAccessible(true);
+		selectedListSet = waypointScreenClass.getDeclaredField("selectedListSet");
+		selectedListSet.setAccessible(true);
 		getSettings = requireMethod(modMainClass, "getSettings", settingsClass);
 		saveWaypoints = requireMethod(settingsClass, "saveWaypoints", void.class, worldClass);
 		waypointConstructor = waypointClass.getConstructor(int.class, int.class, int.class, String.class, String.class, int.class);
@@ -213,6 +217,18 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		Object modMain = invoke(getModMain, session);
 		Object settings = invoke(getSettings, modMain);
 		invoke(saveWaypoints, settings, world);
+	}
+
+	@Override
+	public void clearWaypointScreenSelection() throws ReflectiveOperationException {
+		Object screen = Minecraft.getInstance().screen;
+		if (!waypointScreenClass.isInstance(screen)) {
+			return;
+		}
+		Object selection = selectedListSet.get(screen);
+		if (selection instanceof ConcurrentSkipListSet<?>) {
+			((ConcurrentSkipListSet<?>) selection).clear();
+		}
 	}
 
 	@Override
