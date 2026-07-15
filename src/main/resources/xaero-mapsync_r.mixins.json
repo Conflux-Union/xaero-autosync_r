@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "cn.net.rms.xaeromapsync_r.mixin",
+	"compatibilityLevel": "JAVA_16",
+	"mixins": [
+		"LevelDirtyMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

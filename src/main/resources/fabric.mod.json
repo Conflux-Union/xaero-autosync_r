@@ -1,0 +1,33 @@
+{
+	"schemaVersion": 1,
+	"id": "xaero-mapsync_r",
+	"version": "${version}",
+	"name": "Xaero Map Sync",
+	"description": "Shared server map and public waypoint synchronization skeleton for Minecraft 1.17.1 Fabric servers using Xaero maps.",
+	"authors": [
+		"RMS"
+	],
+	"contact": {
+		"sources": "https://github.com/"
+	},
+	"license": "LGPL-3.0-only",
+	"icon": "assets/xaero-mapsync_r/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"cn.net.rms.xaeromapsync_r.XaeroMapsync_r"
+		],
+		"client": [
+			"cn.net.rms.xaeromapsync_r.XaeroMapsyncClient"
+		]
+	},
+	"mixins": [
+		"xaero-mapsync_r.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.17.1",
+		"java": ">=16",
+		"fabric": "*"
+	}
+}
