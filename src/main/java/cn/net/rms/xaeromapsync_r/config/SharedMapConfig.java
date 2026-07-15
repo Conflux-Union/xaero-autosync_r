@@ -63,6 +63,10 @@ public final class SharedMapConfig {
 		return intValue("tasks.dirty_chunks_per_tick", 1);
 	}
 
+	public static int dirtyChunkScanPerTick() {
+		return positiveIntValue("tasks.dirty_chunk_scan_per_tick", 64);
+	}
+
 	public static int dirtyDrainBudgetPerTick() {
 		return intValue("tasks.dirty_drain_budget_per_tick", 4);
 	}
@@ -141,6 +145,7 @@ public final class SharedMapConfig {
 		defaults.setProperty("tasks.high_load_pause", "true");
 		defaults.setProperty("tasks.high_load_mspt_threshold", "45");
 		defaults.setProperty("tasks.dirty_chunks_per_tick", "1");
+		defaults.setProperty("tasks.dirty_chunk_scan_per_tick", "64");
 		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "4");
 		defaults.setProperty("activity.storm_block_changes_per_tick", "4096");
 		defaults.setProperty("activity.storm_dirty_chunks_per_tick", "16");

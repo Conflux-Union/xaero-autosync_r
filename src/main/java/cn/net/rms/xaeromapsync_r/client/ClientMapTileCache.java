@@ -25,7 +25,10 @@ public final class ClientMapTileCache {
 	}
 
 	public synchronized void put(MapTile tile, long revision) {
-		tiles.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), new CachedTile(tile, revision, tile.dimension(), tile.chunkX(), tile.chunkZ()));
+		String key = key(tile.dimension(), tile.chunkX(), tile.chunkZ());
+		CachedTile current = tiles.get(key);
+		if (current != null && current.revision > revision) return;
+		tiles.put(key, new CachedTile(tile, revision, tile.dimension(), tile.chunkX(), tile.chunkZ()));
 		dirty = true;
 	}
 

@@ -26,11 +26,13 @@ public final class MapTileIndexStore {
 	static final String INDEX_FILE_NAME = "map_tile_index-v3.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
 	private long nextRevision = 1L;
+	private int surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
 
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
 		tiles.clear();
 		nextRevision = 1L;
+		surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
 		if (!Files.exists(path)) {
 			return;
 		}
@@ -40,6 +42,7 @@ public final class MapTileIndexStore {
 				return;
 			}
 			nextRevision = Math.max(1L, file.nextRevision);
+			surfaceSamplerVersion = file.surfaceSamplerVersion;
 			if (file.tiles != null) {
 				for (MapTileIndexEntry tile : file.tiles) {
 					if (tile != null && tile.dimension() != null) {
@@ -61,6 +64,7 @@ public final class MapTileIndexStore {
 			Files.createDirectories(path.getParent());
 			MapTileIndexFile file = new MapTileIndexFile();
 			file.nextRevision = nextRevision;
+			file.surfaceSamplerVersion = surfaceSamplerVersion;
 			file.rootHash = rootHash();
 			file.tiles = tiles.values().toArray(new MapTileIndexEntry[0]);
 			try (Writer writer = Files.newBufferedWriter(tempPath)) {
@@ -95,6 +99,14 @@ public final class MapTileIndexStore {
 		return Collections.unmodifiableCollection(tiles.values());
 	}
 
+	public synchronized boolean requiresSurfaceResample() {
+		return !tiles.isEmpty() && surfaceSamplerVersion < MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
+	}
+
+	public synchronized void markSurfaceSamplerCurrent() {
+		surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
+	}
+
 	public synchronized Collection<MerkleNode> merkleSnapshot() {
 		return MerkleTreeBuilder.build(tiles.values());
 	}
@@ -118,17 +130,25 @@ public final class MapTileIndexStore {
 	}
 
 	public synchronized List<MerkleNode> merkleChildren(String dimension, int level, int nodeX, int nodeZ) {
-		if (level <= 0) {
-			return Collections.emptyList();
-		}
+		return merkleChildren(List.of(new MerkleNodeAddress(dimension, level, nodeX, nodeZ)));
+	}
+
+	public synchronized List<MerkleNode> merkleChildren(Collection<MerkleNodeAddress> addresses) {
+		if (addresses.isEmpty()) return Collections.emptyList();
+		List<MerkleNode> snapshot = MerkleTreeBuilder.build(tiles.values());
 		List<MerkleNode> children = new ArrayList<>();
-		for (MerkleNode node : MerkleTreeBuilder.build(tiles.values())) {
-			if (node.dimension().equals(dimension) && node.level() == level - 1
-					&& Math.floorDiv(node.nodeX(), 2) == nodeX && Math.floorDiv(node.nodeZ(), 2) == nodeZ) {
-				children.add(node);
+		for (MerkleNodeAddress address : addresses) {
+			if (address.level() <= 0) continue;
+			for (MerkleNode node : snapshot) {
+				if (node.dimension().equals(address.dimension()) && node.level() == address.level() - 1
+						&& Math.floorDiv(node.nodeX(), 2) == address.nodeX()
+						&& Math.floorDiv(node.nodeZ(), 2) == address.nodeZ()) {
+					children.add(node);
+				}
 			}
 		}
-		children.sort(Comparator.comparingInt(MerkleNode::nodeX).thenComparingInt(MerkleNode::nodeZ));
+		children.sort(Comparator.comparing(MerkleNode::dimension).thenComparingInt(MerkleNode::level)
+				.thenComparingInt(MerkleNode::nodeX).thenComparingInt(MerkleNode::nodeZ));
 		return children;
 	}
 
@@ -147,6 +167,7 @@ public final class MapTileIndexStore {
 	private static final class MapTileIndexFile {
 		private long nextRevision;
 		private long rootHash;
+		private int surfaceSamplerVersion;
 		private MapTileIndexEntry[] tiles;
 	}
 }

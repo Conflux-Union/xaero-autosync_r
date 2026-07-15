@@ -160,7 +160,8 @@ public final class SharedMapNetworking {
 		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_TRANSFER_PART, (client, handler, buffer, responseSender) -> {
 			TransferPartPayload payload = TransferPartPayload.read(buffer);
-			client.execute(() -> ClientTransfers.MANAGER.accept(payload));
+			// Fragment assembly, checksums and decompression are pure byte work and stay off the render thread.
+			ClientTransfers.MANAGER.accept(payload);
 		});
 	}
 
@@ -262,12 +263,11 @@ public final class SharedMapNetworking {
 
 	private static void sendMapNodeResponse(net.minecraft.server.level.ServerPlayer player, MapNodeRequestPayload request) {
 		try {
-			List<MerkleNode> children = new ArrayList<>();
 			String dimension = request.nodes().get(0).dimension();
 			for (MerkleNodeAddress node : request.nodes()) {
 				if (!dimension.equals(node.dimension())) throw new IllegalArgumentException("Mixed-dimension Merkle request");
-				children.addAll(SharedMapServer.mapTiles().merkleChildren(node.dimension(), node.level(), node.nodeX(), node.nodeZ()));
 			}
+			List<MerkleNode> children = SharedMapServer.mapTiles().merkleChildren(request.nodes());
 			sendMapNodePayload(player, dimension, SharedMapServer.mapTiles().rootHash(dimension), children, leafEntries(children));
 		} catch (RuntimeException exception) {
 			XaeroMapsync_r.LOGGER.warn("Rejected invalid Merkle request from {}", player.getGameProfile().getName(), exception);
@@ -486,9 +486,11 @@ public final class SharedMapNetworking {
 				ClientTransfers::sendAck, ClientTransfers::handleCompleted);
 
 		private static void sendAck(TransferAckPayload payload) {
-			FriendlyByteBuf buffer = PacketByteBufs.create();
-			payload.write(buffer);
-			ClientPlayNetworking.send(C2S_TRANSFER_ACK, buffer);
+			net.minecraft.client.Minecraft.getInstance().execute(() -> {
+				FriendlyByteBuf buffer = PacketByteBufs.create();
+				payload.write(buffer);
+				ClientPlayNetworking.send(C2S_TRANSFER_ACK, buffer);
+			});
 		}
 
 		private static void handleCompleted(byte[] data) {
@@ -496,11 +498,13 @@ public final class SharedMapNetworking {
 			FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.wrappedBuffer(data));
 			int type = buffer.readUnsignedByte();
 			if (type == TRANSFER_TYPE_MAP_NODE_RESPONSE) {
-				SharedMapClient.handleMapNodeResponse(MapNodeResponsePayload.read(buffer));
+				MapNodeResponsePayload payload = MapNodeResponsePayload.read(buffer);
+				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handleMapNodeResponse(payload));
 				return;
 			}
 			if (type == TRANSFER_TYPE_TILE_DATA) {
-				SharedMapClient.handleTileData(TileDataPayload.read(buffer));
+				TileDataPayload payload = TileDataPayload.read(buffer);
+				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handleTileData(payload));
 				return;
 			}
 			throw new IllegalArgumentException("Unknown transfer envelope type: " + type);

@@ -97,6 +97,7 @@ public final class SharedMapServer {
 				XaeroMapsync_r.LOGGER.info("Recovered map tile index from {} cached tiles", recoveredTiles);
 				MAP_TILES.save(server);
 			}
+			queueStartupMapWork(server);
 			ACCESS.load(server);
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
@@ -113,6 +114,33 @@ public final class SharedMapServer {
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
 		});
+	}
+
+	private static void queueStartupMapWork(net.minecraft.server.MinecraftServer server) {
+		int missingExplored = StartupMapWorkPlanner.queueMissingExploredChunks(
+				EXPLORED_CHUNKS.snapshot(), MAP_TILES, DIRTY_CHUNKS);
+		boolean resample = MAP_TILES.requiresSurfaceResample();
+		int staleSamplerTiles = 0;
+		if (resample) {
+			for (cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry entry : MAP_TILES.snapshot()) {
+				if (DIRTY_CHUNKS.markDiscovered(entry.dimension(), entry.chunkX(), entry.chunkZ())) {
+					staleSamplerTiles++;
+				}
+			}
+		}
+		if (missingExplored > 0 || staleSamplerTiles > 0) {
+			// Persist work before advancing the sampler marker so interrupted startup resumes safely.
+			DIRTY_CHUNKS.save(server);
+			MAP_TASKS.requestDrain();
+		}
+		if (resample) {
+			MAP_TILES.markSurfaceSamplerCurrent();
+			MAP_TILES.save(server);
+		}
+		XaeroMapsync_r.LOGGER.info(
+				"Queued {} missing explored chunks and {} cached sampler-v{} tiles for rebuild",
+				missingExplored, staleSamplerTiles,
+				cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer.SURFACE_SAMPLER_VERSION);
 	}
 
 	public static void recordHandshake(ServerPlayer player, ClientHelloPayload hello, boolean accepted) {

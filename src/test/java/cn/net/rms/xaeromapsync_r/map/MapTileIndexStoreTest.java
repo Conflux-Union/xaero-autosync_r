@@ -1,10 +1,13 @@
 package cn.net.rms.xaeromapsync_r.map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.util.Collection;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 final class MapTileIndexStoreTest {
@@ -75,11 +78,33 @@ final class MapTileIndexStoreTest {
 	}
 
 	@Test
+	void batchedMerkleLookupMatchesIndividualLookups() {
+		MapTileIndexStore store = new MapTileIndexStore();
+		for (int chunkX = 0; chunkX < 8; chunkX++) {
+			store.upsert(tile("minecraft:overworld", chunkX, 0, 100L + chunkX));
+		}
+		List<MerkleNodeAddress> roots = store.merkleRoots("minecraft:overworld").stream()
+				.filter(node -> node.level() > 0).map(MerkleNodeAddress::of).toList();
+		assertFalse(roots.isEmpty());
+		List<MerkleNode> expected = new ArrayList<>();
+		for (MerkleNodeAddress root : roots) {
+			expected.addAll(store.merkleChildren(root.dimension(), root.level(), root.nodeX(), root.nodeZ()));
+		}
+
+		assertEquals(expected.stream().map(MapTileIndexStoreTest::nodeSignature).toList(),
+				store.merkleChildren(roots).stream().map(MapTileIndexStoreTest::nodeSignature).toList());
+	}
+
+	@Test
 	void v3IndexUsesIndependentFileName() {
 		assertEquals("map_tile_index-v3.json", MapTileIndexStore.INDEX_FILE_NAME);
 	}
 
 	private static MapTile tile(String dimension, int chunkX, int chunkZ, long contentHash) {
 		return new MapTile(dimension, chunkX, chunkZ, new int[] {1, 2, 3}, contentHash);
+	}
+
+	private static String nodeSignature(MerkleNode node) {
+		return node.dimension() + ':' + node.level() + ':' + node.nodeX() + ':' + node.nodeZ() + ':' + node.hash();
 	}
 }

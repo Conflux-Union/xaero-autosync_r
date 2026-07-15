@@ -2,7 +2,7 @@
 
 面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。服务器维护已探索区域、地图 tile 和共享路径点，客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
 
-当前预发布版本为 `2.1.0-beta.6`，固定适配：
+当前预发布版本为 `2.1.0-beta.7`，固定适配：
 
 - Xaero's World Map `1.25.1`
 - Xaero's Minimap `22.11.1`
@@ -80,11 +80,13 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 - 客户端配置：`config/xaero-mapsync_r-client.properties`
 - 世界数据：`<world>/xaero-mapsync_r/`
 
-地图 v3 使用新的 `tiles-v3`、`map_tile_index-v3.json` 和客户端 `*-v3.properties` 文件。旧版数据会保留用于回滚，但旧 tile 缺少透明覆盖和光照信息，不能无损转换；历史区域会在区块再次自然加载时按 v3 格式补齐，Mod 不会为迁移主动加载世界区块。
+`tasks.dirty_chunk_scan_per_tick` 仅控制每 tick 检查多少个候选区块（默认 64）；实际地图渲染仍由 `tasks.dirty_chunks_per_tick` 限流，避免未加载区块阻塞玩家附近的回填。
+
+地图 v3 使用新的 `tiles-v3`、`map_tile_index-v3.json` 和客户端 `*-v3.properties` 文件。旧版数据会保留用于回滚，但旧 tile 缺少透明覆盖和光照信息，不能无损转换；历史区域会在区块再次自然加载时按 v3 格式补齐，Mod 不会为迁移主动加载世界区块。地表采样算法带有独立版本标记；升级后旧采样 tile 会排入持久化重建队列，并在对应区块自然加载时原位更新。
 
 ## 构建与测试
 
-需要 Java 16：
+源码兼容 Java 16。当前 Gradle/Loom 需要 Java 21+，Minecraft 1.17.1 的客户端与服务端运行任务则通过 toolchain 固定到 Java 17，避免旧版 LWJGL 在新 JVM 上发生原生崩溃：
 
 ```bat
 gradlew.bat clean build

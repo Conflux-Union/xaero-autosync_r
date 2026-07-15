@@ -24,13 +24,32 @@ public final class DirtyChunkProcessor {
 	}
 
 	public synchronized TickResult processTick(int budget) {
-		List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(budget);
+		return processTick(budget, budget);
+	}
+
+	public synchronized TickResult processTick(int renderBudget, int scanBudget) {
+		if (renderBudget < 0 || scanBudget < 0) {
+			throw new IllegalArgumentException("Dirty chunk budgets must not be negative");
+		}
+		if (renderBudget == 0 || scanBudget == 0) {
+			return recordResult(renderBudget, List.of(), 0, 0, 0, 0);
+		}
+		List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(scanBudget);
 		int completedThisTick = 0;
 		int deferredThisTick = 0;
 		int failedThisTick = 0;
 		int staleThisTick = 0;
+		int renderAttempts = 0;
 
 		for (DirtyChunkStore.StableDirtyChunk chunk : chunks) {
+			if (renderAttempts >= renderBudget) {
+				if (store.defer(chunk)) {
+					deferredThisTick++;
+				} else {
+					staleThisTick++;
+				}
+				continue;
+			}
 			boolean loaded;
 			try {
 				loaded = loadedChunkProbe.isLoaded(chunk);
@@ -52,6 +71,7 @@ public final class DirtyChunkProcessor {
 				continue;
 			}
 
+			renderAttempts++;
 			boolean successful;
 			try {
 				successful = recalculator.recalculate(chunk);
@@ -68,13 +88,18 @@ public final class DirtyChunkProcessor {
 			}
 		}
 
+		return recordResult(renderBudget, chunks, completedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+	}
+
+	private TickResult recordResult(int renderBudget, List<DirtyChunkStore.StableDirtyChunk> chunks,
+			int completedThisTick, int deferredThisTick, int failedThisTick, int staleThisTick) {
 		ticks++;
 		claimed += chunks.size();
 		completed += completedThisTick;
 		deferred += deferredThisTick;
 		failed += failedThisTick;
 		stale += staleThisTick;
-		return new TickResult(budget, chunks.size(), completedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+		return new TickResult(renderBudget, chunks.size(), completedThisTick, deferredThisTick, failedThisTick, staleThisTick);
 	}
 
 	public synchronized Statistics statistics() {

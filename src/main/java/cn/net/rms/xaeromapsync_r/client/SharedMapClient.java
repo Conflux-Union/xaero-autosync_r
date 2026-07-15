@@ -45,7 +45,13 @@ public final class SharedMapClient {
 	private static final ClientMerkleCache MERKLE = new ClientMerkleCache();
 	private static final ArrayDeque<MapTileIndexEntry> TILE_REQUEST_QUEUE = new ArrayDeque<>();
 	private static final Set<String> QUEUED_TILES = new HashSet<>();
+	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
+	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
+	private static final int MAX_PENDING_TILE_APPLIES = 64;
+	private static final int MAX_TILE_APPLIES_PER_TICK = 8;
+	private static final long TILE_APPLY_BUDGET_NANOS = 4_000_000L;
+	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static int tileRequestsInFlight;
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
@@ -79,6 +85,7 @@ public final class SharedMapClient {
 		previousDimension = currentDimension();
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			SharedMapNetworking.tickClientTransfers();
+			processPendingTileApplications();
 			sanitizeWaypointsIfNeeded();
 			handleConfigChanges();
 			handleSyncWatchdog();
@@ -147,28 +154,68 @@ public final class SharedMapClient {
 	public static void handleTileData(TileDataPayload payload) {
 		if (!SharedMapClientConfig.get().mapSyncEnabled()) return;
 		if (!payload.tile().dimension().equals(currentDimension())) return;
+		String key = tileKey(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ());
+		if (!QUEUED_TILES.contains(key)) return;
+		tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
 		if (mapAdapter == null || !mapAdapter.isAvailable()) {
 			resetMapQueues();
 			return;
 		}
-		if (!mapAdapter.apply(payload.tile())) {
-			resetMapQueues();
-			if (COMPLETED_MAP_ROOTS.remove(payload.tile().dimension()) != null) {
-				saveCompletedRootHash();
-			}
-			if (mapAdapter.isAvailable()) retryMapSyncAtMillis = System.currentTimeMillis() + 2_000L;
+		if (TILE_DATA.hasRevision(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ(),
+				payload.revision())) {
+			QUEUED_TILES.remove(key);
+			pumpTileRequests();
 			return;
 		}
-		TILE_DATA.put(payload.tile(), payload.revision());
-		QUEUED_TILES.remove(tileKey(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ()));
-		tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
+		if (PENDING_TILE_APPLIES.add(key)) {
+			TILE_APPLY_QUEUE.addLast(new PendingTileApply(key, payload, 0L, 0));
+		}
 		lastMapProgressMillis = System.currentTimeMillis();
 		pumpTileRequests();
-		XaeroMapsync_r.LOGGER.debug("Received tile data {} {} {} revision={}",
+		XaeroMapsync_r.LOGGER.debug("Queued tile data {} {} {} revision={}",
 				payload.tile().dimension(),
 				payload.tile().chunkX(),
 				payload.tile().chunkZ(),
 				payload.revision());
+	}
+
+	private static void processPendingTileApplications() {
+		if (TILE_APPLY_QUEUE.isEmpty() || mapAdapter == null || !mapAdapter.isAvailable()) return;
+		long now = System.currentTimeMillis();
+		long deadline = System.nanoTime() + TILE_APPLY_BUDGET_NANOS;
+		int inspected = TILE_APPLY_QUEUE.size();
+		int attempted = 0;
+		while (inspected-- > 0 && attempted < MAX_TILE_APPLIES_PER_TICK && !TILE_APPLY_QUEUE.isEmpty()) {
+			PendingTileApply pending = TILE_APPLY_QUEUE.removeFirst();
+			if (pending.retryAtMillis > now) {
+				TILE_APPLY_QUEUE.addLast(pending);
+				continue;
+			}
+			attempted++;
+			XaeroMapAdapter.ApplyResult result = mapAdapter.applyResult(pending.payload.tile());
+			if (result == XaeroMapAdapter.ApplyResult.APPLIED) {
+				completeTileApply(pending);
+			} else if (result == XaeroMapAdapter.ApplyResult.RETRY_LATER) {
+				TILE_APPLY_QUEUE.addLast(new PendingTileApply(pending.key, pending.payload,
+						now + TILE_APPLY_RETRY_MILLIS, pending.attempts + 1));
+			} else {
+				resetMapQueues();
+				return;
+			}
+			if (System.nanoTime() >= deadline) break;
+		}
+		pumpTileRequests();
+	}
+
+	private static void completeTileApply(PendingTileApply pending) {
+		TileDataPayload payload = pending.payload;
+		TILE_DATA.put(payload.tile(), payload.revision());
+		PENDING_TILE_APPLIES.remove(pending.key);
+		QUEUED_TILES.remove(pending.key);
+		lastMapProgressMillis = System.currentTimeMillis();
+		XaeroMapsync_r.LOGGER.debug("Applied tile data {} {} {} revision={} attempts={}",
+				payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ(), payload.revision(),
+				pending.attempts + 1);
 	}
 
 	public static void handleTileUnavailable(TileUnavailablePayload payload) {
@@ -244,12 +291,17 @@ public final class SharedMapClient {
 
 	private static void pumpTileRequests() {
 		int limit = SharedMapConfig.maxTileRequestsPerSnapshot();
-		while (tileRequestsInFlight < limit && !TILE_REQUEST_QUEUE.isEmpty()) {
+		while (canRequestTile(tileRequestsInFlight, TILE_APPLY_QUEUE.size(), limit, MAX_PENDING_TILE_APPLIES)
+				&& !TILE_REQUEST_QUEUE.isEmpty()) {
 			SharedMapNetworking.requestTile(TILE_REQUEST_QUEUE.remove());
 			tileRequestsInFlight++;
 			lastMapProgressMillis = System.currentTimeMillis();
 		}
 		markRootCompleteIfIdle();
+	}
+
+	static boolean canRequestTile(int inFlight, int pendingApplies, int requestLimit, int maxPendingApplies) {
+		return inFlight < requestLimit && inFlight + pendingApplies < maxPendingApplies;
 	}
 
 	private static void pumpMapNodeRequests() {
@@ -318,7 +370,7 @@ public final class SharedMapClient {
 
 	private static void handleSyncWatchdog() {
 		long now = System.currentTimeMillis();
-		boolean waiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0;
+		boolean waiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0 || !TILE_APPLY_QUEUE.isEmpty();
 		if (waiting && now - lastMapProgressMillis >= 30_000L) {
 			resetMapQueues();
 			retryMapSyncAtMillis = now + 250L;
@@ -342,7 +394,7 @@ public final class SharedMapClient {
 			return;
 		}
 		if (tileRequestsInFlight == 0 && mapNodeRequestsInFlight == 0
-				&& TILE_REQUEST_QUEUE.isEmpty() && MAP_NODE_QUEUE.isEmpty()) {
+				&& TILE_REQUEST_QUEUE.isEmpty() && TILE_APPLY_QUEUE.isEmpty() && MAP_NODE_QUEUE.isEmpty()) {
 			SharedMapNetworking.requestMapSync();
 		}
 	}
@@ -350,7 +402,7 @@ public final class SharedMapClient {
 	public static int waypointCount() { return WAYPOINTS.activeCount(); }
 	public static int tileCount() { return TILE_DATA.totalCount(); }
 	public static int indexedTileCount() { return MAP_TILES.totalCount(); }
-	public static int pendingTileCount() { return TILE_REQUEST_QUEUE.size() + tileRequestsInFlight; }
+	public static int pendingTileCount() { return TILE_REQUEST_QUEUE.size() + tileRequestsInFlight + TILE_APPLY_QUEUE.size(); }
 	public static java.util.List<PublicWaypoint> waypointSnapshot() { return WAYPOINTS.snapshot(); }
 
 	public static void shareSelectedXaeroWaypoint(Screen screen, WaypointVisibility visibility) {
@@ -431,7 +483,7 @@ public final class SharedMapClient {
 
 	private static void markRootCompleteIfIdle() {
 		if (canCompleteMapRoot(mapSyncIncomplete, mapNodeRequestsInFlight, MAP_NODE_QUEUE.size(),
-				tileRequestsInFlight, TILE_REQUEST_QUEUE.size())
+				tileRequestsInFlight, TILE_REQUEST_QUEUE.size(), TILE_APPLY_QUEUE.size())
 				&& syncingDimension != null && COMPLETED_MAP_ROOTS.getOrDefault(syncingDimension, 0L) != MAP_TILES.rootHash()) {
 			COMPLETED_MAP_ROOTS.put(syncingDimension, MAP_TILES.rootHash());
 			saveCompletedRootHash();
@@ -439,8 +491,9 @@ public final class SharedMapClient {
 	}
 
 	static boolean canCompleteMapRoot(boolean incomplete, int nodeRequests, int queuedNodes,
-			int tileRequests, int queuedTiles) {
-		return !incomplete && nodeRequests == 0 && queuedNodes == 0 && tileRequests == 0 && queuedTiles == 0;
+			int tileRequests, int queuedTiles, int pendingApplies) {
+		return !incomplete && nodeRequests == 0 && queuedNodes == 0 && tileRequests == 0 && queuedTiles == 0
+				&& pendingApplies == 0;
 	}
 
 	private static void loadCompletedRootHash() {
@@ -496,8 +549,10 @@ public final class SharedMapClient {
 
 	private static void resetMapQueues() {
 		TILE_REQUEST_QUEUE.clear();
+		TILE_APPLY_QUEUE.clear();
 		MAP_NODE_QUEUE.clear();
 		QUEUED_TILES.clear();
+		PENDING_TILE_APPLIES.clear();
 		MERKLE.replace(java.util.List.of());
 		tileRequestsInFlight = 0;
 		mapNodeRequestsInFlight = 0;
@@ -505,4 +560,6 @@ public final class SharedMapClient {
 		syncingDimension = null;
 		syncingRootHash = 0L;
 	}
+
+	private record PendingTileApply(String key, TileDataPayload payload, long retryAtMillis, int attempts) {}
 }

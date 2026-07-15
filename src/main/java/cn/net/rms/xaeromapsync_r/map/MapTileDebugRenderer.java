@@ -24,6 +24,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.material.FluidState;
 
 public final class MapTileDebugRenderer {
+	public static final int SURFACE_SAMPLER_VERSION = 2;
 	private static final int TILE_SIDE = 16;
 	private static final int TILE_AREA = TILE_SIDE * TILE_SIDE;
 	private static final float WATER_TRANSPARENCY = 0.66F;
@@ -85,7 +86,8 @@ public final class MapTileDebugRenderer {
 				int worldX = (chunkX << 4) + localX;
 				int worldZ = (chunkZ << 4) + localZ;
 				int index = localZ * TILE_SIDE + localX;
-				int surfaceY = chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ) - 1;
+				// ChunkAccess#getHeight already returns the highest matching block Y in 1.17.1.
+				int surfaceY = surfaceY(chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
 				ColumnSurface surface = scanColumn(level, chunk, worldX, worldZ, localX, localZ, surfaceY, scanPos, lightPos);
 				baseStateIds[index] = Block.getId(surface.baseState);
 				baseHeights[index] = surface.baseHeight;
@@ -106,6 +108,10 @@ public final class MapTileDebugRenderer {
 		XaeroMapsync_r.LOGGER.debug("Rendered surface tile {} {} {} hash={}", tile.dimension(), tile.chunkX(), tile.chunkZ(),
 				tile.contentHash());
 		return tile;
+	}
+
+	static int surfaceY(int heightmapY) {
+		return heightmapY;
 	}
 
 	private static ColumnSurface scanColumn(ServerLevel level, ChunkAccess chunk, int worldX, int worldZ, int localX,

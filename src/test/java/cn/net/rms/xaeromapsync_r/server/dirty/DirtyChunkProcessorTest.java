@@ -60,6 +60,27 @@ final class DirtyChunkProcessorTest {
 	}
 
 	@Test
+	void scanBudgetFindsLoadedChunkBehindLargeUnloadedBacklog() {
+		DirtyChunkStore store = stableStore(64);
+		List<Integer> recalculated = new ArrayList<>();
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(
+				store,
+				chunk -> chunk.chunkX() == 63,
+				chunk -> {
+					recalculated.add(chunk.chunkX());
+					return true;
+				});
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(1, 64);
+
+		assertEquals(64, result.claimed());
+		assertEquals(1, result.completed());
+		assertEquals(63, result.deferred());
+		assertEquals(List.of(63), recalculated);
+		assertEquals(63, store.totalCount());
+	}
+
+	@Test
 	void failedAndExceptionalRecalculationsRemainQueued() {
 		DirtyChunkStore store = stableStore(2);
 		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> {
@@ -112,6 +133,7 @@ final class DirtyChunkProcessorTest {
 		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> true);
 
 		assertThrows(IllegalArgumentException.class, () -> processor.processTick(-1));
+		assertThrows(IllegalArgumentException.class, () -> processor.processTick(1, -1));
 		assertThrows(IllegalArgumentException.class, () -> new DirtyChunkProcessor(null, chunk -> true, chunk -> true));
 	}
 

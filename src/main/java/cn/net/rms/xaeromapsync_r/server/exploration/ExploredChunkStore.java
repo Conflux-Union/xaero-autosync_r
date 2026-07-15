@@ -9,8 +9,10 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.server.MinecraftServer;
@@ -88,6 +90,19 @@ public final class ExploredChunkStore {
 		}
 		return count;
 	}
+
+	public synchronized List<ExploredChunk> snapshot() {
+		List<ExploredChunk> snapshot = new ArrayList<>(totalCount());
+		for (Map.Entry<String, Set<Long>> entry : chunksByDimension.entrySet()) {
+			for (long packedChunk : entry.getValue()) {
+				ChunkPos chunk = new ChunkPos(packedChunk);
+				snapshot.add(new ExploredChunk(entry.getKey(), chunk.x, chunk.z));
+			}
+		}
+		return List.copyOf(snapshot);
+	}
+
+	public record ExploredChunk(String dimension, int chunkX, int chunkZ) {}
 
 	private static long[] toArray(Set<Long> chunks) {
 		long[] values = new long[chunks.size()];

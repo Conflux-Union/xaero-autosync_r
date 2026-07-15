@@ -15,14 +15,22 @@ final class SharedMapClientTest {
 
 	@Test
 	void unavailableTilePreventsRootCompletionAfterQueuesDrain() {
-		assertFalse(SharedMapClient.canCompleteMapRoot(true, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(true, 0, 0, 0, 0, 0));
 	}
 
 	@Test
 	void completeRootRequiresEveryQueueAndRequestToBeIdle() {
-		assertTrue(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0));
-		assertFalse(SharedMapClient.canCompleteMapRoot(false, 1, 0, 0, 0));
-		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 1));
+		assertTrue(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 1, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 1, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 1));
+	}
+
+	@Test
+	void tileRequestsUseBackpressureWhileXaeroAppliesDownloadedTiles() {
+		assertTrue(SharedMapClient.canRequestTile(15, 32, 16, 64));
+		assertFalse(SharedMapClient.canRequestTile(16, 0, 16, 64));
+		assertFalse(SharedMapClient.canRequestTile(8, 56, 16, 64));
 	}
 
 	@Test

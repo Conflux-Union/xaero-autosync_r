@@ -12,6 +12,11 @@ import org.junit.jupiter.api.Test;
 
 final class MapTileDebugRendererTest {
 	@Test
+	void heightmapSurfaceIsNotMovedDownIntoDirt() {
+		assertEquals(64, MapTileDebugRenderer.surfaceY(64));
+	}
+
+	@Test
 	void transparencyMatchesXaeroOverlayWeights() {
 		assertEquals(0.66F, MapTileDebugRenderer.transparency(true, false));
 		assertEquals(0.83F, MapTileDebugRenderer.transparency(false, true));

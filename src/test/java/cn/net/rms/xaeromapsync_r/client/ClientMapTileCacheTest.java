@@ -1,6 +1,7 @@
 package cn.net.rms.xaeromapsync_r.client;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import java.nio.file.Path;
@@ -28,6 +29,16 @@ final class ClientMapTileCacheTest {
 		third.load(file);
 		assertTrue(third.hasRevision("minecraft:overworld", -1, 2, 7L));
 		assertTrue(third.hasRevision("minecraft:the_nether", 3, -4, 9L));
+	}
+
+	@Test
+	void delayedPayloadCannotReplaceNewerRevision() {
+		ClientMapTileCache cache = new ClientMapTileCache();
+		cache.put(tile("minecraft:overworld", 1, 2), 9L);
+		cache.put(tile("minecraft:overworld", 1, 2), 7L);
+
+		assertTrue(cache.hasRevision("minecraft:overworld", 1, 2, 9L));
+		assertFalse(cache.hasRevision("minecraft:overworld", 1, 2, 10L));
 	}
 
 	private static MapTile tile(String dimension, int x, int z) {
