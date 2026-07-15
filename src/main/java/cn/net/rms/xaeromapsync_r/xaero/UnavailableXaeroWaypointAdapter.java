@@ -19,4 +19,9 @@ final class UnavailableXaeroWaypointAdapter implements XaeroWaypointAdapter {
 	public XaeroWaypointReconcileResult reconcile(Collection<PublicWaypoint> waypoints) {
 		return XaeroWaypointReconcileResult.unavailable(reason);
 	}
+
+	@Override
+	public XaeroLocalWaypointReadResult readLocalWaypoints() {
+		return XaeroLocalWaypointReadResult.unavailable(reason);
+	}
 }

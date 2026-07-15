@@ -19,6 +19,7 @@ import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 
 public final class MapTaskScheduler {
 	private static final double EWMA_ALPHA = 0.1D;
+	private static final int SAMPLE_WINDOW = 1200;
 	private final DirtyChunkStore dirtyChunks;
 	private final MapTileIndexStore mapTiles;
 	private final MapTileDataStore tileData;
@@ -27,6 +28,12 @@ public final class MapTaskScheduler {
 	private MinecraftServer activeServer;
 	private long tickStartedNanos;
 	private double averageMspt;
+	private final double[] msptSamples = new double[SAMPLE_WINDOW];
+	private int sampleCursor;
+	private int sampleCount;
+	private double lastMspt;
+	private double lastTaskMillis;
+	private long completedTiles;
 	private boolean paused;
 	private boolean drainRequested;
 
@@ -45,16 +52,22 @@ public final class MapTaskScheduler {
 
 	private void endTick(MinecraftServer server) {
 		double elapsedMillis = (System.nanoTime() - tickStartedNanos) / 1_000_000.0D;
+		lastMspt = elapsedMillis;
+		msptSamples[sampleCursor] = elapsedMillis;
+		sampleCursor = (sampleCursor + 1) % SAMPLE_WINDOW;
+		sampleCount = Math.min(SAMPLE_WINDOW, sampleCount + 1);
 		averageMspt = averageMspt == 0.0D ? elapsedMillis : averageMspt + EWMA_ALPHA * (elapsedMillis - averageMspt);
 		if (paused || SharedMapConfig.highLoadPause() && averageMspt >= SharedMapConfig.highLoadMsptThreshold()) {
 			return;
 		}
 		activeServer = server;
+		long taskStartedNanos = System.nanoTime();
 		try {
 			int budget = drainRequested ? SharedMapConfig.dirtyDrainBudgetPerTick() : SharedMapConfig.dirtyChunksPerTick();
-			processor.processTick(budget);
+			completedTiles += processor.processTick(budget).completed();
 			drainRequested = false;
 		} finally {
+			lastTaskMillis = (System.nanoTime() - taskStartedNanos) / 1_000_000.0D;
 			activeServer = null;
 		}
 	}
@@ -97,6 +110,15 @@ public final class MapTaskScheduler {
 
 	public synchronized boolean paused() { return paused; }
 	public synchronized double averageMspt() { return averageMspt; }
+	public synchronized double lastMspt() { return lastMspt; }
+	public synchronized double lastTaskMillis() { return lastTaskMillis; }
+	public synchronized long completedTiles() { return completedTiles; }
+	public synchronized double p95Mspt() {
+		if (sampleCount == 0) return 0.0D;
+		double[] copy = java.util.Arrays.copyOf(msptSamples, sampleCount);
+		java.util.Arrays.sort(copy);
+		return copy[(int) Math.ceil(copy.length * 0.95D) - 1];
+	}
 	public synchronized void requestDrain() { drainRequested = true; }
 	public DirtyChunkProcessor.Statistics statistics() { return processor.statistics(); }
 }

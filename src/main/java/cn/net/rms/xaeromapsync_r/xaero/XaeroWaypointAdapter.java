@@ -7,4 +7,6 @@ public interface XaeroWaypointAdapter {
 	boolean isAvailable();
 
 	XaeroWaypointReconcileResult reconcile(Collection<PublicWaypoint> waypoints);
+
+	XaeroLocalWaypointReadResult readLocalWaypoints();
 }

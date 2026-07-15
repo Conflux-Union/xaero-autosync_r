@@ -38,6 +38,14 @@ public final class SharedMapConfig {
 		return intValue("network.max_tile_requests_per_snapshot", 16);
 	}
 
+	public static int bytesPerPlayerPerTick() {
+		return positiveIntValue("network.bytes_per_player_per_tick", 32_768);
+	}
+
+	public static int globalBytesPerTick() {
+		return positiveIntValue("network.global_bytes_per_tick", 262_144);
+	}
+
 	public static String compression() {
 		return VALUES.getProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 	}
@@ -58,10 +66,14 @@ public final class SharedMapConfig {
 		return intValue("tasks.dirty_drain_budget_per_tick", 4);
 	}
 
-	public static int stormBlockChangesThreshold() { return intValue("activity.storm_block_changes_per_tick", 4096); }
-	public static int stormDirtyChunksThreshold() { return intValue("activity.storm_dirty_chunks_per_tick", 16); }
-	public static int stormCooldownTicks() { return intValue("activity.storm_cooldown_ticks", 100); }
-	public static int stableTicks() { return intValue("activity.stable_ticks", 200); }
+	public static int stormBlockChangesThreshold() { return positiveIntValue("activity.storm_block_changes_per_tick", 4096); }
+	public static int stormDirtyChunksThreshold() { return positiveIntValue("activity.storm_dirty_chunks_per_tick", 16); }
+	public static int stormTntEntitiesThreshold() { return positiveIntValue("activity.storm_tnt_entities_per_tick", 64); }
+	public static int stormExplosionsThreshold() { return positiveIntValue("activity.storm_explosions_per_tick", 8); }
+	public static int stormPistonActionsThreshold() { return positiveIntValue("activity.storm_piston_actions_per_tick", 128); }
+	public static int stormLightUpdatesThreshold() { return positiveIntValue("activity.storm_light_updates_per_tick", 2048); }
+	public static int stormCooldownTicks() { return positiveIntValue("activity.storm_cooldown_ticks", 100); }
+	public static int stableTicks() { return positiveIntValue("activity.stable_ticks", 200); }
 	public static boolean allowPlayerWaypointUpload() { return booleanValue("waypoints.allow_player_upload", true); }
 	public static int maxWaypointsPerPlayer() { return intValue("waypoints.max_per_player", 256); }
 	public static int maxPublicWaypoints() { return intValue("waypoints.max_total", 4096); }
@@ -98,6 +110,15 @@ public final class SharedMapConfig {
 		}
 	}
 
+	private static int positiveIntValue(String key, int fallback) {
+		int value = intValue(key, fallback);
+		if (value > 0) {
+			return value;
+		}
+		XaeroMapsync_r.LOGGER.warn("Non-positive config value for {}, using {}", key, fallback);
+		return fallback;
+	}
+
 	private static boolean booleanValue(String key, boolean fallback) {
 		String value = VALUES.getProperty(key);
 		return value == null ? fallback : Boolean.parseBoolean(value);
@@ -111,6 +132,8 @@ public final class SharedMapConfig {
 		defaults.setProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 		defaults.setProperty("network.max_packet_bytes", Integer.toString(SharedMapProtocolDefaults.MAX_PACKET_BYTES));
 		defaults.setProperty("network.max_tile_requests_per_snapshot", "16");
+		defaults.setProperty("network.bytes_per_player_per_tick", "32768");
+		defaults.setProperty("network.global_bytes_per_tick", "262144");
 		defaults.setProperty("exploration.auto_view_distance", "true");
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");
@@ -120,6 +143,10 @@ public final class SharedMapConfig {
 		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "4");
 		defaults.setProperty("activity.storm_block_changes_per_tick", "4096");
 		defaults.setProperty("activity.storm_dirty_chunks_per_tick", "16");
+		defaults.setProperty("activity.storm_tnt_entities_per_tick", "64");
+		defaults.setProperty("activity.storm_explosions_per_tick", "8");
+		defaults.setProperty("activity.storm_piston_actions_per_tick", "128");
+		defaults.setProperty("activity.storm_light_updates_per_tick", "2048");
 		defaults.setProperty("activity.storm_cooldown_ticks", "100");
 		defaults.setProperty("activity.stable_ticks", "200");
 		defaults.setProperty("waypoints.allow_player_upload", "true");

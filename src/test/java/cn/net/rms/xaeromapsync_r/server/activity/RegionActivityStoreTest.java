@@ -104,6 +104,19 @@ final class RegionActivityStoreTest {
 		assertEquals(1, store.statistics().total());
 	}
 
+	@Test
+	void specializedSampleUsesTheSameStormStateMachine() {
+		RegionActivityStore store = new RegionActivityStore(
+				new RegionActivityThresholds(10, 3, 4, 2, 5, 6, 2, 3));
+		RegionKey key = key(0);
+
+		store.recordTick(key, new RegionActivitySample(0, 0, 0, 2, 0, 0));
+
+		RegionActivityRecord record = store.get(key).orElseThrow();
+		assertEquals(RegionActivityState.STORM, record.state());
+		assertEquals(2, record.totalExplosions());
+	}
+
 	private static RegionActivityStore store() {
 		return new RegionActivityStore(10, 3, 2, 3);
 	}

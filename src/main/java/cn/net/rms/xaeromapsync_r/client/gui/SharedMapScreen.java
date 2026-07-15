@@ -40,12 +40,14 @@ public final class SharedMapScreen extends Screen {
 		addToggle(left + (buttonWidth + gap) * 2, 68, buttonWidth, "notifications", config.notificationsEnabled(),
 				enabled -> config.setNotificationsEnabled(enabled));
 
-		int actionWidth = (contentWidth - gap * 2) / 3;
+		int actionWidth = (contentWidth - gap * 3) / 4;
 		addRenderableWidget(new Button(left, 96, actionWidth, CONTROL_HEIGHT,
 				new TranslatableComponent("screen.xaero-mapsync_r.add"), button -> minecraft.setScreen(new WaypointEditScreen(this, null))));
 		addRenderableWidget(new Button(left + actionWidth + gap, 96, actionWidth, CONTROL_HEIGHT,
-				new TranslatableComponent("screen.xaero-mapsync_r.edit"), button -> editSelected()));
+				new TranslatableComponent("screen.xaero-mapsync_r.import_local"), button -> minecraft.setScreen(new LocalWaypointImportScreen(this))));
 		addRenderableWidget(new Button(left + (actionWidth + gap) * 2, 96, actionWidth, CONTROL_HEIGHT,
+				new TranslatableComponent("screen.xaero-mapsync_r.edit"), button -> editSelected()));
+		addRenderableWidget(new Button(left + (actionWidth + gap) * 3, 96, actionWidth, CONTROL_HEIGHT,
 				new TranslatableComponent("screen.xaero-mapsync_r.delete"), button -> deleteSelected()));
 
 		searchBox = new EditBox(font, left, 122, contentWidth, CONTROL_HEIGHT,

@@ -10,10 +10,7 @@ import java.util.Set;
 /** Thread-safe owner of region activity records and manual controls. */
 public final class RegionActivityStore {
 	private final Map<RegionKey, RegionActivityRecord> records = new LinkedHashMap<>();
-	private final int stormBlockChangesThreshold;
-	private final int stormDirtyChunksThreshold;
-	private final int stormCooldownTicks;
-	private final int stableTicks;
+	private final RegionActivityThresholds thresholds;
 	private boolean paused;
 	private final Set<RegionKey> pausedRegions = new HashSet<>();
 
@@ -22,28 +19,30 @@ public final class RegionActivityStore {
 			int stormDirtyChunksThreshold,
 			int stormCooldownTicks,
 			int stableTicks) {
-		// Let the record validate all threshold values consistently.
-		new RegionActivityRecord(
+		this(RegionActivityThresholds.blockOnly(
 				stormBlockChangesThreshold,
 				stormDirtyChunksThreshold,
 				stormCooldownTicks,
-				stableTicks);
-		this.stormBlockChangesThreshold = stormBlockChangesThreshold;
-		this.stormDirtyChunksThreshold = stormDirtyChunksThreshold;
-		this.stormCooldownTicks = stormCooldownTicks;
-		this.stableTicks = stableTicks;
+				stableTicks));
+	}
+
+	public RegionActivityStore(RegionActivityThresholds thresholds) {
+		this.thresholds = Objects.requireNonNull(thresholds, "thresholds");
 	}
 
 	/** Records one tick unless automatic processing is paused. */
 	public synchronized void recordTick(RegionKey key, int blockChanges, int dirtyChunks) {
+		recordTick(key, new RegionActivitySample(blockChanges, dirtyChunks, 0, 0, 0, 0));
+	}
+
+	/** Records one complete activity sample unless automatic processing is paused. */
+	public synchronized void recordTick(RegionKey key, RegionActivitySample sample) {
 		Objects.requireNonNull(key, "key");
-		if (blockChanges < 0 || dirtyChunks < 0) {
-			throw new IllegalArgumentException("Activity counts must not be negative");
-		}
+		Objects.requireNonNull(sample, "sample");
 		if (paused || pausedRegions.contains(key)) {
 			return;
 		}
-		records.computeIfAbsent(key, ignored -> newRecord()).recordTick(blockChanges, dirtyChunks);
+		records.computeIfAbsent(key, ignored -> newRecord()).recordTick(sample);
 	}
 
 	public synchronized Optional<RegionActivityRecord> get(RegionKey key) {
@@ -113,11 +112,7 @@ public final class RegionActivityStore {
 	}
 
 	private RegionActivityRecord newRecord() {
-		return new RegionActivityRecord(
-				stormBlockChangesThreshold,
-				stormDirtyChunksThreshold,
-				stormCooldownTicks,
-				stableTicks);
+		return new RegionActivityRecord(thresholds);
 	}
 
 	public record Statistics(

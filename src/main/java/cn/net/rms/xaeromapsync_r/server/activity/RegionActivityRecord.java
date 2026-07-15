@@ -1,14 +1,17 @@
 package cn.net.rms.xaeromapsync_r.server.activity;
 
+import java.util.Objects;
+
 /** Thread-safe activity state machine for one region. */
 public final class RegionActivityRecord {
-	private final int stormBlockChangesThreshold;
-	private final int stormDirtyChunksThreshold;
-	private final int stormCooldownTicks;
-	private final int stableTicks;
+	private final RegionActivityThresholds thresholds;
 	private RegionActivityState state = RegionActivityState.QUIET;
 	private int totalBlockChanges;
 	private int totalDirtyChunks;
+	private int totalTntEntities;
+	private int totalExplosions;
+	private int totalPistonActions;
+	private int totalLightUpdates;
 	private int quietTicks;
 
 	public RegionActivityRecord(
@@ -16,27 +19,37 @@ public final class RegionActivityRecord {
 			int stormDirtyChunksThreshold,
 			int stormCooldownTicks,
 			int stableTicks) {
-		this.stormBlockChangesThreshold = requirePositive(stormBlockChangesThreshold, "Storm block-change threshold");
-		this.stormDirtyChunksThreshold = requirePositive(stormDirtyChunksThreshold, "Storm dirty-chunk threshold");
-		this.stormCooldownTicks = requirePositive(stormCooldownTicks, "Storm cooldown ticks");
-		this.stableTicks = requirePositive(stableTicks, "Stable ticks");
+		this(RegionActivityThresholds.blockOnly(
+				stormBlockChangesThreshold,
+				stormDirtyChunksThreshold,
+				stormCooldownTicks,
+				stableTicks));
+	}
+
+	public RegionActivityRecord(RegionActivityThresholds thresholds) {
+		this.thresholds = Objects.requireNonNull(thresholds, "thresholds");
 	}
 
 	/** Applies exactly one tick of observations. */
 	public synchronized void recordTick(int blockChanges, int dirtyChunks) {
-		requireNonNegative(blockChanges, "Block changes");
-		requireNonNegative(dirtyChunks, "Dirty chunks");
+		recordTick(new RegionActivitySample(blockChanges, dirtyChunks, 0, 0, 0, 0));
+	}
 
-		totalBlockChanges = saturatedAdd(totalBlockChanges, blockChanges);
-		totalDirtyChunks = saturatedAdd(totalDirtyChunks, dirtyChunks);
+	/** Applies exactly one tick of all supported activity signals. */
+	public synchronized void recordTick(RegionActivitySample sample) {
+		Objects.requireNonNull(sample, "sample");
+		totalBlockChanges = saturatedAdd(totalBlockChanges, sample.blockChanges());
+		totalDirtyChunks = saturatedAdd(totalDirtyChunks, sample.dirtyChunks());
+		totalTntEntities = saturatedAdd(totalTntEntities, sample.tntEntities());
+		totalExplosions = saturatedAdd(totalExplosions, sample.explosions());
+		totalPistonActions = saturatedAdd(totalPistonActions, sample.pistonActions());
+		totalLightUpdates = saturatedAdd(totalLightUpdates, sample.lightUpdates());
 
-		boolean hasActivity = blockChanges != 0 || dirtyChunks != 0;
-		if (hasActivity) {
+		if (sample.hasActivity()) {
 			quietTicks = 0;
 			if (state == RegionActivityState.COOLDOWN
 					|| state == RegionActivityState.STORM
-					|| blockChanges >= stormBlockChangesThreshold
-					|| dirtyChunks >= stormDirtyChunksThreshold) {
+					|| thresholds.isStorm(sample)) {
 				state = RegionActivityState.STORM;
 			} else {
 				state = RegionActivityState.ACTIVE;
@@ -46,19 +59,19 @@ public final class RegionActivityRecord {
 
 		switch (state) {
 			case ACTIVE:
-				if (++quietTicks >= stableTicks) {
+				if (++quietTicks >= thresholds.stableTicks()) {
 					state = RegionActivityState.STABLE;
 					quietTicks = 0;
 				}
 				break;
 			case STORM:
-				if (++quietTicks >= stormCooldownTicks) {
+				if (++quietTicks >= thresholds.stormCooldownTicks()) {
 					state = RegionActivityState.COOLDOWN;
 					quietTicks = 0;
 				}
 				break;
 			case COOLDOWN:
-				if (++quietTicks >= stableTicks) {
+				if (++quietTicks >= thresholds.stableTicks()) {
 					state = RegionActivityState.STABLE;
 					quietTicks = 0;
 				}
@@ -87,24 +100,16 @@ public final class RegionActivityRecord {
 		return totalDirtyChunks;
 	}
 
+	public synchronized int totalTntEntities() { return totalTntEntities; }
+	public synchronized int totalExplosions() { return totalExplosions; }
+	public synchronized int totalPistonActions() { return totalPistonActions; }
+	public synchronized int totalLightUpdates() { return totalLightUpdates; }
+
 	public synchronized int quietTicks() {
 		return quietTicks;
 	}
 
 	private static int saturatedAdd(int current, int increment) {
 		return increment > Integer.MAX_VALUE - current ? Integer.MAX_VALUE : current + increment;
-	}
-
-	private static int requirePositive(int value, String name) {
-		if (value <= 0) {
-			throw new IllegalArgumentException(name + " must be positive");
-		}
-		return value;
-	}
-
-	private static void requireNonNegative(int value, String name) {
-		if (value < 0) {
-			throw new IllegalArgumentException(name + " must not be negative");
-		}
 	}
 }

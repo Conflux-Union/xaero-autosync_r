@@ -4,15 +4,20 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Method getCurrentSession;
 	private final Method getWaypointsManager;
 	private final Method getModMain;
 	private final Method getCurrentWorld;
+	private final Method getAutoWorld;
 	private final Method getCurrentSet;
+	private final Method getSets;
 	private final Method getList;
+	private final Method getSetName;
 	private final Method getSettings;
 	private final Method saveWaypoints;
 	private final Constructor<?> waypointConstructor;
@@ -45,8 +50,11 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		getWaypointsManager = requireMethod(sessionClass, "getWaypointsManager", managerClass);
 		getModMain = requireMethod(sessionClass, "getModMain", modMainClass);
 		getCurrentWorld = requireMethod(managerClass, "getCurrentWorld", worldClass);
+		getAutoWorld = requireMethod(managerClass, "getAutoWorld", worldClass);
 		getCurrentSet = requireMethod(worldClass, "getCurrentSet", setClass);
+		getSets = requireMethod(worldClass, "getSets", java.util.HashMap.class);
 		getList = requireMethod(setClass, "getList", java.util.ArrayList.class);
+		getSetName = requireMethod(setClass, "getName", String.class);
 		getSettings = requireMethod(modMainClass, "getSettings", settingsClass);
 		saveWaypoints = requireMethod(settingsClass, "saveWaypoints", void.class, worldClass);
 		waypointConstructor = waypointClass.getConstructor(int.class, int.class, int.class, String.class, String.class, int.class);
@@ -67,20 +75,38 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	@Override
 	@SuppressWarnings("unchecked")
 	public Target currentTarget() throws ReflectiveOperationException {
-		Object session = invoke(getCurrentSession, null);
-		if (session == null) {
-			throw new IllegalStateException("Xaero minimap session is not initialized");
-		}
-		Object manager = invoke(getWaypointsManager, session);
-		Object world = invoke(getCurrentWorld, manager);
-		if (world == null) {
-			throw new IllegalStateException("Xaero current waypoint world is not initialized");
-		}
+		Object world = currentWorld();
 		Object set = invoke(getCurrentSet, world);
 		if (set == null) {
 			throw new IllegalStateException("Xaero current waypoint set is not initialized");
 		}
 		return new Target(world, (List<Object>) invoke(getList, set));
+	}
+
+	@Override
+	@SuppressWarnings("unchecked")
+	public List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException {
+		Object world = autoWorld();
+		Map<String, Object> sets = (Map<String, Object>) invoke(getSets, world);
+		if (sets == null) {
+			throw new IllegalStateException("Xaero waypoint sets are not initialized");
+		}
+
+		List<LocalWaypointValues> result = new ArrayList<>();
+		for (Object set : new ArrayList<>(sets.values())) {
+			if (set == null) {
+				continue;
+			}
+			String category = (String) invoke(getSetName, set);
+			List<Object> waypoints = (List<Object>) invoke(getList, set);
+			for (Object waypoint : new ArrayList<>(waypoints)) {
+				WaypointValues values = readValues(waypoint);
+				if (!XaeroWaypointIdentity.isManagedName(values.name)) {
+					result.add(new LocalWaypointValues(values, category));
+				}
+			}
+		}
+		return result;
 	}
 
 	@Override
@@ -94,6 +120,10 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 
 	@Override
 	public WaypointValues read(Object waypoint) throws ReflectiveOperationException {
+		return readValues(waypoint);
+	}
+
+	private WaypointValues readValues(Object waypoint) throws ReflectiveOperationException {
 		return new WaypointValues(
 			(int) invoke(getX, waypoint),
 			(int) invoke(getY, waypoint),
@@ -102,6 +132,36 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 			(String) invoke(getSymbol, waypoint),
 			(int) invoke(getColor, waypoint)
 		);
+	}
+
+	private Object currentWorld() throws ReflectiveOperationException {
+		Object manager = currentManager();
+		Object world = invoke(getCurrentWorld, manager);
+		if (world == null) {
+			throw new IllegalStateException("Xaero current waypoint world is not initialized");
+		}
+		return world;
+	}
+
+	private Object autoWorld() throws ReflectiveOperationException {
+		Object manager = currentManager();
+		Object world = invoke(getAutoWorld, manager);
+		if (world == null) {
+			throw new IllegalStateException("Xaero automatic waypoint world is not initialized");
+		}
+		return world;
+	}
+
+	private Object currentManager() throws ReflectiveOperationException {
+		Object session = invoke(getCurrentSession, null);
+		if (session == null) {
+			throw new IllegalStateException("Xaero minimap session is not initialized");
+		}
+		Object manager = invoke(getWaypointsManager, session);
+		if (manager == null) {
+			throw new IllegalStateException("Xaero waypoints manager is not initialized");
+		}
+		return manager;
 	}
 
 	@Override

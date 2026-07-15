@@ -23,4 +23,12 @@ final class XaeroWaypointIdentityTest {
 		assertTrue(XaeroWaypointIdentity.parse("Home [XMS-EjRWeBI0VniavN7wEjRWeA]").isEmpty());
 		assertTrue(XaeroWaypointIdentity.parse("Home [xms-EjRWeBI0VniavN7wEjRWeA] trailing").isEmpty());
 	}
+
+	@Test
+	void managedNameFilterRejectsAllTrailingXmsMarkers() {
+		assertTrue(XaeroWaypointIdentity.isManagedName("Home [xms-EjRWeBI0VniavN7wEjRWeA]"));
+		assertTrue(XaeroWaypointIdentity.isManagedName("Home [xms-malformed-but-managed]"));
+		assertTrue(!XaeroWaypointIdentity.isManagedName("Home [xms-marker] trailing"));
+		assertTrue(!XaeroWaypointIdentity.isManagedName("Home"));
+	}
 }

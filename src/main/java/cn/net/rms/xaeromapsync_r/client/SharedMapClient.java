@@ -26,6 +26,7 @@ import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroDetector;
 import cn.net.rms.xaeromapsync_r.xaero.ReflectiveXaeroMapAdapter;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroMapAdapter;
+import cn.net.rms.xaeromapsync_r.xaero.XaeroLocalWaypointReadResult;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointAdapter;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointAdapters;
 
@@ -90,6 +91,8 @@ public final class SharedMapClient {
 	public static void disconnect() {
 		connectedToSharedMapServer = false;
 		resetMapQueues();
+		WAYPOINTS.replace(java.util.List.of());
+		reconcileWaypoints();
 		TILE_DATA.saveIfDirty();
 	}
 
@@ -287,6 +290,11 @@ public final class SharedMapClient {
 	public static int indexedTileCount() { return MAP_TILES.totalCount(); }
 	public static int pendingTileCount() { return TILE_REQUEST_QUEUE.size() + tileRequestsInFlight; }
 	public static java.util.List<PublicWaypoint> waypointSnapshot() { return WAYPOINTS.snapshot(); }
+	public static XaeroLocalWaypointReadResult readLocalWaypoints() {
+		return waypointAdapter == null
+				? XaeroLocalWaypointReadResult.notReady("Xaero waypoint adapter is not initialized")
+				: waypointAdapter.readLocalWaypoints();
+	}
 
 	private static void markRootCompleteIfIdle() {
 		if (mapNodeRequestsInFlight == 0 && MAP_NODE_QUEUE.isEmpty() && tileRequestsInFlight == 0 && TILE_REQUEST_QUEUE.isEmpty()

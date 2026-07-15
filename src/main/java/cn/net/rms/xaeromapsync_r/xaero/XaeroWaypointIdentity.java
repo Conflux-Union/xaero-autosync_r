@@ -40,6 +40,14 @@ final class XaeroWaypointIdentity {
 		}
 	}
 
+	static boolean isManagedName(String name) {
+		if (name == null || !name.endsWith(SUFFIX)) {
+			return false;
+		}
+		int markerStart = name.lastIndexOf(PREFIX);
+		return markerStart >= 0 && markerStart + PREFIX.length() < name.length() - SUFFIX.length();
+	}
+
 	private static String encode(UUID id) {
 		ByteBuffer buffer = ByteBuffer.allocate(16);
 		buffer.putLong(id.getMostSignificantBits());

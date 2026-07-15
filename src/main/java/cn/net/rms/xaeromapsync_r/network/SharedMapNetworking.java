@@ -9,9 +9,11 @@ import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
+import cn.net.rms.xaeromapsync_r.server.access.SharedMapActor;
+import cn.net.rms.xaeromapsync_r.server.access.SharedMapActors;
+import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import io.netty.buffer.Unpooled;
-import java.util.Collections;
 import java.util.Optional;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -66,7 +68,7 @@ public final class SharedMapNetworking {
 			});
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_WAYPOINT_SNAPSHOT_REQUEST, (server, player, handler, buffer, responseSender) ->
-				server.execute(() -> runForAcceptedClient(player, () -> sendWaypointSnapshot(player))));
+				server.execute(() -> runForAcceptedClient(player, () -> refreshWaypointVisibility(player))));
 		ServerPlayNetworking.registerGlobalReceiver(C2S_MAP_ROOT_HASH, (server, player, handler, buffer, responseSender) -> {
 			MapRootHashPayload payload = MapRootHashPayload.read(buffer);
 			server.execute(() -> runForAcceptedClient(player, () -> sendMapIndexIfChanged(player, payload)));
@@ -230,8 +232,15 @@ public final class SharedMapNetworking {
 		ClientPlayNetworking.send(C2S_MAP_ROOT_HASH, mapRootBuffer);
 	}
 
-	private static void sendWaypointSnapshot(net.minecraft.server.level.ServerPlayer player) {
-		WaypointSnapshotPayload payload = new WaypointSnapshotPayload(0L, SharedMapServer.waypoints().snapshot());
+	public static void refreshWaypointVisibility(net.minecraft.server.level.ServerPlayer player) {
+		SharedMapActor actor = SharedMapActors.from(player);
+		List<PublicWaypoint> visible = new ArrayList<>();
+		for (PublicWaypoint waypoint : SharedMapServer.waypoints().snapshot()) {
+			if (SharedMapServer.permissions().canView(actor, waypoint)) {
+				visible.add(waypoint);
+			}
+		}
+		WaypointSnapshotPayload payload = new WaypointSnapshotPayload(0L, visible);
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
 		ServerPlayNetworking.send(player, S2C_WAYPOINT_SNAPSHOT, buffer);
@@ -329,39 +338,29 @@ public final class SharedMapNetworking {
 	}
 
 	private static void handleWaypointCreate(net.minecraft.server.level.ServerPlayer player, WaypointCreatePayload payload) {
+		SharedMapActor actor = SharedMapActors.from(player);
 		try {
 			PublicWaypoint submitted = payload.waypoint();
 			if (SharedMapServer.waypoints().find(submitted.id()).isPresent()) {
 				throw new IllegalArgumentException("Waypoint id already exists");
 			}
-			SharedMapServer.permissions().validateCreate(player, submitted);
+			PublicWaypoint waypoint = SharedMapServer.permissions().prepareCreate(
+					actor,
+					submitted,
+					SharedMapServer.waypoints().activeCount(),
+					SharedMapServer.waypoints().activeCount(player.getUUID()));
 			long now = System.currentTimeMillis();
-			PublicWaypoint waypoint = new PublicWaypoint(
-					submitted.id(),
-					player.getUUID(),
-					player.getGameProfile().getName(),
-					submitted.name(),
-					submitted.dimension(),
-					submitted.x(),
-					submitted.y(),
-					submitted.z(),
-					submitted.symbol(),
-					submitted.color(),
-					submitted.category(),
-					submitted.visibility(),
-					0L,
-					false,
-					0L,
-					0L);
 			PublicWaypoint stored = SharedMapServer.waypoints().upsert(waypoint, now);
-			XaeroMapsync_r.LOGGER.info("Public waypoint created id={} actor={} revision={}", stored.id(), player.getUUID(), stored.revision());
-			broadcastWaypoint(player.getServer(), S2C_WAYPOINT_UPSERT, stored);
+			auditWaypoint(actor, "waypoint.create", true, stored, "revision=" + stored.revision());
+			broadcastWaypointUpsert(player.getServer(), null, stored);
 		} catch (RuntimeException exception) {
+			auditWaypoint(actor, "waypoint.create", false, payload.waypoint(), exception.getMessage());
 			sendWaypointError(player, exception.getMessage());
 		}
 	}
 
 	private static void handleWaypointUpdate(net.minecraft.server.level.ServerPlayer player, WaypointUpdatePayload payload) {
+		SharedMapActor actor = SharedMapActors.from(player);
 		try {
 			Optional<PublicWaypoint> current = SharedMapServer.waypoints().find(payload.waypoint().id());
 			if (current.isEmpty()) {
@@ -370,37 +369,19 @@ public final class SharedMapNetworking {
 			if (current.get().revision() != payload.knownRevision()) {
 				throw new IllegalArgumentException("Waypoint revision conflict");
 			}
-			if (!canMutate(player, current.get())) {
-				throw new IllegalArgumentException("Waypoint permission denied");
-			}
 			PublicWaypoint submitted = payload.waypoint();
-			SharedMapServer.permissions().validateUpdate(submitted);
-			PublicWaypoint waypoint = new PublicWaypoint(
-					submitted.id(),
-					current.get().creatorId(),
-					current.get().creatorName(),
-					submitted.name(),
-					submitted.dimension(),
-					submitted.x(),
-					submitted.y(),
-					submitted.z(),
-					submitted.symbol(),
-					submitted.color(),
-					submitted.category(),
-					submitted.visibility(),
-					current.get().revision(),
-					false,
-					current.get().createdAtMillis(),
-					current.get().updatedAtMillis());
+			PublicWaypoint waypoint = SharedMapServer.permissions().prepareUpdate(actor, current.get(), submitted);
 			PublicWaypoint stored = SharedMapServer.waypoints().upsert(waypoint, System.currentTimeMillis());
-			XaeroMapsync_r.LOGGER.info("Public waypoint updated id={} actor={} revision={}", stored.id(), player.getUUID(), stored.revision());
-			broadcastWaypoint(player.getServer(), S2C_WAYPOINT_UPSERT, stored);
+			auditWaypoint(actor, "waypoint.update", true, stored, "revision=" + stored.revision());
+			broadcastWaypointUpsert(player.getServer(), current.get(), stored);
 		} catch (RuntimeException exception) {
+			auditWaypoint(actor, "waypoint.update", false, payload.waypoint(), exception.getMessage());
 			sendWaypointError(player, exception.getMessage());
 		}
 	}
 
 	private static void handleWaypointDelete(net.minecraft.server.level.ServerPlayer player, WaypointDeletePayload payload) {
+		SharedMapActor actor = SharedMapActors.from(player);
 		try {
 			Optional<PublicWaypoint> current = SharedMapServer.waypoints().find(payload.waypointId());
 			if (current.isEmpty()) {
@@ -409,32 +390,56 @@ public final class SharedMapNetworking {
 			if (current.get().revision() != payload.knownRevision()) {
 				throw new IllegalArgumentException("Waypoint revision conflict");
 			}
-			if (!canMutate(player, current.get())) {
-				throw new IllegalArgumentException("Waypoint permission denied");
-			}
+			SharedMapServer.permissions().validateDelete(actor, current.get());
 			PublicWaypoint tombstone = SharedMapServer.waypoints().delete(payload.waypointId(), System.currentTimeMillis());
 			if (tombstone != null) {
-				XaeroMapsync_r.LOGGER.info("Public waypoint deleted id={} actor={} revision={}", tombstone.id(), player.getUUID(), tombstone.revision());
-				broadcastWaypoint(player.getServer(), S2C_WAYPOINT_DELETE, tombstone);
+				auditWaypoint(actor, "waypoint.delete", true, tombstone, "revision=" + tombstone.revision());
+				broadcastWaypointDelete(player.getServer(), current.get(), tombstone);
 			}
 		} catch (RuntimeException exception) {
+			SharedMapServer.access().audit().record(actor, "waypoint.delete", false, null, payload.waypointId(), exception.getMessage());
 			sendWaypointError(player, exception.getMessage());
 		}
 	}
 
-	private static boolean canMutate(net.minecraft.server.level.ServerPlayer player, PublicWaypoint waypoint) {
-		return SharedMapServer.permissions().canMutate(player, waypoint);
-	}
-
-	private static void broadcastWaypoint(net.minecraft.server.MinecraftServer server, net.minecraft.resources.ResourceLocation channel, PublicWaypoint waypoint) {
-		WaypointSnapshotPayload payload = new WaypointSnapshotPayload(waypoint.revision(), Collections.singletonList(waypoint));
+	private static void broadcastWaypointUpsert(net.minecraft.server.MinecraftServer server, PublicWaypoint previous, PublicWaypoint waypoint) {
 		for (net.minecraft.server.level.ServerPlayer player : net.fabricmc.fabric.api.networking.v1.PlayerLookup.all(server)) {
-			if (SharedMapServer.hasAcceptedClient(player.getUUID())) {
-				FriendlyByteBuf buffer = PacketByteBufs.create();
-				payload.write(buffer);
-				ServerPlayNetworking.send(player, channel, buffer);
+			if (!SharedMapServer.hasAcceptedClient(player.getUUID())) {
+				continue;
+			}
+			SharedMapActor recipient = SharedMapActors.from(player);
+			if (SharedMapServer.permissions().canView(recipient, waypoint)) {
+				sendWaypoint(player, S2C_WAYPOINT_UPSERT, waypoint);
+			} else if (previous != null && SharedMapServer.permissions().canView(recipient, previous)) {
+				sendWaypoint(player, S2C_WAYPOINT_DELETE, waypoint.tombstone(waypoint.revision(), waypoint.updatedAtMillis()));
 			}
 		}
+	}
+
+	public static void broadcastWaypointDelete(net.minecraft.server.MinecraftServer server, PublicWaypoint previous, PublicWaypoint tombstone) {
+		for (net.minecraft.server.level.ServerPlayer player : net.fabricmc.fabric.api.networking.v1.PlayerLookup.all(server)) {
+			if (SharedMapServer.hasAcceptedClient(player.getUUID())
+					&& SharedMapServer.permissions().canView(SharedMapActors.from(player), previous)) {
+				sendWaypoint(player, S2C_WAYPOINT_DELETE, tombstone);
+			}
+		}
+	}
+
+	private static void sendWaypoint(net.minecraft.server.level.ServerPlayer player, net.minecraft.resources.ResourceLocation channel, PublicWaypoint waypoint) {
+		WaypointSnapshotPayload payload = new WaypointSnapshotPayload(waypoint.revision(), List.of(waypoint));
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		payload.write(buffer);
+		ServerPlayNetworking.send(player, channel, buffer);
+	}
+
+	private static void auditWaypoint(SharedMapActor actor, String action, boolean success, PublicWaypoint waypoint, String detail) {
+		RegionKey region = null;
+		try {
+			region = SharedMapServer.permissions().regionOf(waypoint);
+		} catch (RuntimeException ignored) {
+			// Invalid coordinates are already represented by the failed audit detail.
+		}
+		SharedMapServer.access().audit().record(actor, action, success, region, waypoint.id(), detail);
 	}
 
 	private static void sendWaypointError(net.minecraft.server.level.ServerPlayer player, String message) {

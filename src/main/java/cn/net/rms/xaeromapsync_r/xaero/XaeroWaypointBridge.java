@@ -5,6 +5,8 @@ import java.util.List;
 interface XaeroWaypointBridge {
 	Target currentTarget() throws ReflectiveOperationException;
 
+	List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException;
+
 	Object create(WaypointValues values) throws ReflectiveOperationException;
 
 	WaypointValues read(Object waypoint) throws ReflectiveOperationException;
@@ -28,6 +30,24 @@ interface XaeroWaypointBridge {
 
 		List<Object> waypoints() {
 			return waypoints;
+		}
+	}
+
+	final class LocalWaypointValues {
+		private final WaypointValues values;
+		private final String category;
+
+		LocalWaypointValues(WaypointValues values, String category) {
+			this.values = values;
+			this.category = category;
+		}
+
+		WaypointValues values() {
+			return values;
+		}
+
+		String category() {
+			return category;
 		}
 	}
 }

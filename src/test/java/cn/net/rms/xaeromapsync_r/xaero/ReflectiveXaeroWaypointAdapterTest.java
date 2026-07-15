@@ -118,12 +118,65 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertFalse(adapter.isAvailable());
 	}
 
+	@Test
+	void localReadReturnsSortedDefensiveSnapshotsWithExplicitDimension() {
+		FakeBridge bridge = new FakeBridge();
+		bridge.localPoints.add(local("Zulu", 3, 4, 5, "Z", 7, "beta"));
+		bridge.localPoints.add(local("Alpha", 1, 2, 3, "A", 6, "alpha"));
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroLocalWaypointReadResult result = adapter.readLocalWaypoints();
+
+		assertEquals(XaeroLocalWaypointReadResult.Outcome.LOADED, result.outcome());
+		assertEquals(List.of("Alpha", "Zulu"), result.waypoints().stream().map(XaeroLocalWaypoint::name).toList());
+		assertTrue(result.waypoints().stream().allMatch(waypoint -> OVERWORLD.equals(waypoint.dimension())));
+		assertThrowsUnsupported(() -> result.waypoints().clear());
+	}
+
+	@Test
+	void uninitializedLocalReadCanBeRetriedWithoutOpeningCircuit() {
+		FakeBridge bridge = new FakeBridge();
+		bridge.localNotReady = true;
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroLocalWaypointReadResult first = adapter.readLocalWaypoints();
+		bridge.localNotReady = false;
+		XaeroLocalWaypointReadResult second = adapter.readLocalWaypoints();
+
+		assertEquals(XaeroLocalWaypointReadResult.Outcome.NOT_READY, first.outcome());
+		assertTrue(first.retryable());
+		assertEquals(XaeroLocalWaypointReadResult.Outcome.LOADED, second.outcome());
+	}
+
+	@Test
+	void localReadFailureOpensOnlyLocalReadCircuit() {
+		FakeBridge bridge = new FakeBridge();
+		bridge.failLocalRead = true;
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroLocalWaypointReadResult first = adapter.readLocalWaypoints();
+		XaeroLocalWaypointReadResult second = adapter.readLocalWaypoints();
+
+		assertEquals(XaeroLocalWaypointReadResult.Outcome.FAILED, first.outcome());
+		assertEquals(XaeroLocalWaypointReadResult.Outcome.UNAVAILABLE, second.outcome());
+		assertTrue(adapter.isAvailable());
+		assertEquals(1, bridge.localReadCount);
+	}
+
 	private static ReflectiveXaeroWaypointAdapter adapter(FakeBridge bridge, boolean clientThread) {
 		return new ReflectiveXaeroWaypointAdapter(bridge, () -> OVERWORLD, () -> clientThread);
 	}
 
 	private static FakePoint managed(UUID id, String name, int x, int y, int z, String symbol, int color) {
 		return new FakePoint(new WaypointValues(x, y, z, XaeroWaypointIdentity.managedName(name, id), symbol, color));
+	}
+
+	private static XaeroWaypointBridge.LocalWaypointValues local(String name, int x, int y, int z, String symbol, int color, String category) {
+		return new XaeroWaypointBridge.LocalWaypointValues(new WaypointValues(x, y, z, name, symbol, color), category);
+	}
+
+	private static void assertThrowsUnsupported(Runnable action) {
+		org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class, action::run);
 	}
 
 	private static PublicWaypoint waypoint(UUID id, String name, String dimension, double x, double y, double z, String symbol, int color, WaypointVisibility visibility, boolean deleted) {
@@ -144,6 +197,10 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		private int saveCount;
 		private boolean failOnTarget;
 		private boolean failOnSave;
+		private final List<LocalWaypointValues> localPoints = new ArrayList<>();
+		private boolean localNotReady;
+		private boolean failLocalRead;
+		private int localReadCount;
 
 		private FakeBridge(FakePoint... points) {
 			this.points.addAll(Arrays.asList(points));
@@ -156,6 +213,18 @@ final class ReflectiveXaeroWaypointAdapterTest {
 				throw new ReflectiveOperationException("test failure");
 			}
 			return new Target(world, (List) points);
+		}
+
+		@Override
+		public List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException {
+			localReadCount++;
+			if (localNotReady) {
+				throw new IllegalStateException("Xaero minimap session is not initialized");
+			}
+			if (failLocalRead) {
+				throw new ReflectiveOperationException("test local read failure");
+			}
+			return new ArrayList<>(localPoints);
 		}
 
 		@Override

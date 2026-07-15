@@ -19,6 +19,8 @@ final class WaypointEditScreen extends Screen {
 	private EditBox x;
 	private EditBox y;
 	private EditBox z;
+	private WaypointVisibility visibility;
+	private Button visibilityButton;
 	private String validationError = "";
 
 	WaypointEditScreen(Screen parent, PublicWaypoint original) {
@@ -39,9 +41,21 @@ final class WaypointEditScreen extends Screen {
 		x = field(left, 122, 68, coordinate(initialX), 24);
 		y = field(left + 76, 122, 68, coordinate(initialY), 24);
 		z = field(left + 152, 122, 68, coordinate(initialZ), 24);
-		addRenderableWidget(new Button(left, 160, 106, 20, new TranslatableComponent("gui.done"), button -> submit()));
-		addRenderableWidget(new Button(left + 114, 160, 106, 20, new TranslatableComponent("gui.cancel"), button -> onClose()));
+		visibility = original != null && original.visibility() == WaypointVisibility.TEAM
+				? WaypointVisibility.TEAM : WaypointVisibility.PUBLIC;
+		visibilityButton = addRenderableWidget(new Button(left, 160, 220, 20, visibilityMessage(), button -> toggleVisibility()));
+		addRenderableWidget(new Button(left, 194, 106, 20, new TranslatableComponent("gui.done"), button -> submit()));
+		addRenderableWidget(new Button(left + 114, 194, 106, 20, new TranslatableComponent("gui.cancel"), button -> onClose()));
 		setInitialFocus(name);
+	}
+
+	private void toggleVisibility() {
+		visibility = visibility == WaypointVisibility.PUBLIC ? WaypointVisibility.TEAM : WaypointVisibility.PUBLIC;
+		visibilityButton.setMessage(visibilityMessage());
+	}
+
+	private TranslatableComponent visibilityMessage() {
+		return new TranslatableComponent("screen.xaero-mapsync_r.visibility." + visibility.name().toLowerCase(java.util.Locale.ROOT));
 	}
 
 	private EditBox field(int x, int y, int width, String value, int maxLength) {
@@ -63,7 +77,7 @@ final class WaypointEditScreen extends Screen {
 					name.getValue().trim(), dimension,
 					Double.parseDouble(x.getValue()), Double.parseDouble(y.getValue()), Double.parseDouble(z.getValue()),
 					original == null ? null : original.symbol(), original == null ? 0x55FFFF : original.color(),
-					category.getValue().trim(), WaypointVisibility.PUBLIC,
+					category.getValue().trim(), visibility,
 					original == null ? 0L : original.revision(), false,
 					original == null ? 0L : original.createdAtMillis(), original == null ? 0L : original.updatedAtMillis());
 			waypoint.validate();
@@ -91,7 +105,8 @@ final class WaypointEditScreen extends Screen {
 		font.draw(poseStack, new TranslatableComponent("screen.xaero-mapsync_r.name"), width / 2 - 110, 42, 0xA0A0A0);
 		font.draw(poseStack, new TranslatableComponent("screen.xaero-mapsync_r.category"), width / 2 - 110, 76, 0xA0A0A0);
 		font.draw(poseStack, new TranslatableComponent("screen.xaero-mapsync_r.coordinates"), width / 2 - 110, 110, 0xA0A0A0);
-		if (!validationError.isEmpty()) drawCenteredString(poseStack, font, validationError, width / 2, 190, 0xFF5555);
+		font.draw(poseStack, new TranslatableComponent("screen.xaero-mapsync_r.visibility"), width / 2 - 110, 148, 0xA0A0A0);
+		if (!validationError.isEmpty()) drawCenteredString(poseStack, font, validationError, width / 2, 224, 0xFF5555);
 		super.render(poseStack, mouseX, mouseY, delta);
 	}
 

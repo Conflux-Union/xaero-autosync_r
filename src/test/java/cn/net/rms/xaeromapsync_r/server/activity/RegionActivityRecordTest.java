@@ -32,6 +32,34 @@ final class RegionActivityRecordTest {
 	}
 
 	@Test
+	void eachSpecializedThresholdEntersStormAtExactBoundary() {
+		RegionActivitySample[] samples = {
+				new RegionActivitySample(0, 0, 4, 0, 0, 0),
+				new RegionActivitySample(0, 0, 0, 2, 0, 0),
+				new RegionActivitySample(0, 0, 0, 0, 5, 0),
+				new RegionActivitySample(0, 0, 0, 0, 0, 6)
+		};
+
+		for (RegionActivitySample sample : samples) {
+			RegionActivityRecord record = specializedRecord();
+			record.recordTick(sample);
+			assertEquals(RegionActivityState.STORM, record.state());
+		}
+	}
+
+	@Test
+	void specializedSignalsAccumulateWithoutTriggeringBelowThreshold() {
+		RegionActivityRecord record = specializedRecord();
+		record.recordTick(new RegionActivitySample(0, 0, 3, 1, 4, 5));
+
+		assertEquals(RegionActivityState.ACTIVE, record.state());
+		assertEquals(3, record.totalTntEntities());
+		assertEquals(1, record.totalExplosions());
+		assertEquals(4, record.totalPistonActions());
+		assertEquals(5, record.totalLightUpdates());
+	}
+
+	@Test
 	void stormCrossesCooldownAndStableBoundaries() {
 		RegionActivityRecord record = record();
 		record.recordTick(10, 0);
@@ -98,6 +126,10 @@ final class RegionActivityRecordTest {
 		assertThrows(IllegalArgumentException.class, () -> new RegionActivityRecord(1, 0, 1, 1));
 		assertThrows(IllegalArgumentException.class, () -> new RegionActivityRecord(1, 1, 0, 1));
 		assertThrows(IllegalArgumentException.class, () -> new RegionActivityRecord(1, 1, 1, 0));
+		assertThrows(IllegalArgumentException.class, () -> new RegionActivityThresholds(1, 1, 0, 1, 1, 1, 1, 1));
+		assertThrows(IllegalArgumentException.class, () -> new RegionActivityThresholds(1, 1, 1, 0, 1, 1, 1, 1));
+		assertThrows(IllegalArgumentException.class, () -> new RegionActivityThresholds(1, 1, 1, 1, 0, 1, 1, 1));
+		assertThrows(IllegalArgumentException.class, () -> new RegionActivityThresholds(1, 1, 1, 1, 1, 0, 1, 1));
 
 		RegionActivityRecord record = record();
 		assertThrows(IllegalArgumentException.class, () -> record.recordTick(-1, 0));
@@ -120,5 +152,9 @@ final class RegionActivityRecordTest {
 
 	private static RegionActivityRecord record() {
 		return new RegionActivityRecord(10, 3, 2, 3);
+	}
+
+	private static RegionActivityRecord specializedRecord() {
+		return new RegionActivityRecord(new RegionActivityThresholds(10, 3, 4, 2, 5, 6, 2, 3));
 	}
 }

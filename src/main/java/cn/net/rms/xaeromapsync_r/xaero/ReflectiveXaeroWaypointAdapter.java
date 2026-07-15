@@ -5,6 +5,7 @@ import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import cn.net.rms.xaeromapsync_r.waypoint.WaypointVisibility;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -19,6 +20,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 	private final Supplier<String> currentDimension;
 	private final BooleanSupplier clientThread;
 	private boolean available = true;
+	private boolean localReadAvailable = true;
 
 	ReflectiveXaeroWaypointAdapter(XaeroWaypointBridge bridge, Supplier<String> currentDimension, BooleanSupplier clientThread) {
 		this.bridge = bridge;
@@ -117,9 +119,56 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 		}
 	}
 
+	@Override
+	public XaeroLocalWaypointReadResult readLocalWaypoints() {
+		if (!available || !localReadAvailable) {
+			return XaeroLocalWaypointReadResult.unavailable("Xaero local waypoint reader is disabled");
+		}
+		if (!clientThread.getAsBoolean()) {
+			String message = "Xaero local waypoints must be read on the client main thread";
+			XaeroMapsync_r.LOGGER.error(message);
+			return XaeroLocalWaypointReadResult.failed(message);
+		}
+
+		try {
+			String dimension = currentDimension.get();
+			if (dimension == null) {
+				throw new IllegalStateException("Minecraft client world is not initialized");
+			}
+			List<XaeroLocalWaypoint> localWaypoints = new ArrayList<>();
+			for (XaeroWaypointBridge.LocalWaypointValues entry : bridge.readLocalWaypoints()) {
+				WaypointValues values = entry.values();
+				localWaypoints.add(new XaeroLocalWaypoint(values.name, dimension, values.x, values.y, values.z,
+						values.symbol, values.color, entry.category()));
+			}
+			localWaypoints.sort(Comparator.comparing(XaeroLocalWaypoint::category,
+					Comparator.nullsFirst(String.CASE_INSENSITIVE_ORDER))
+					.thenComparing(XaeroLocalWaypoint::name, String.CASE_INSENSITIVE_ORDER)
+					.thenComparingInt(XaeroLocalWaypoint::x)
+					.thenComparingInt(XaeroLocalWaypoint::y)
+					.thenComparingInt(XaeroLocalWaypoint::z));
+			return XaeroLocalWaypointReadResult.loaded(localWaypoints);
+		} catch (RuntimeException | ReflectiveOperationException | LinkageError exception) {
+			if (isNotReady(exception)) {
+				String message = "Xaero waypoint runtime is not initialized; local read can be retried";
+				XaeroMapsync_r.LOGGER.debug(message);
+				return XaeroLocalWaypointReadResult.notReady(message);
+			}
+			localReadAvailable = false;
+			String message = "Xaero local waypoint read failed; reader disabled for this session";
+			XaeroMapsync_r.LOGGER.error(message, exception);
+			return XaeroLocalWaypointReadResult.failed(message + ": " + exception.getMessage());
+		}
+	}
+
 	private static boolean isNotReady(Throwable exception) {
-		return exception instanceof IllegalStateException && exception.getMessage() != null
-				&& exception.getMessage().contains("not initialized");
+		for (Throwable current = exception; current != null; current = current.getCause()) {
+			if (current instanceof IllegalStateException && current.getMessage() != null
+					&& current.getMessage().contains("not initialized")) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void rollback(XaeroWaypointBridge.Target target, List<Object> originalOrder, Map<Object, WaypointValues> originalValues) {
