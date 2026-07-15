@@ -2,7 +2,7 @@
 
 面向 Minecraft Java Edition 1.17.1 Fabric 服务端的共享地图与公共路径点同步 Mod。服务端维护已探索区域、地表 tile 和公共路径点，安装客户端 Mod 的玩家继续通过 Xaero World Map / Xaero Minimap 查看同步结果。
 
-当前预发布版本为 `2.1.0-beta.1`，同步协议和地图格式均为版本 2。客户端 Xaero 反射适配器固定支持：
+当前预发布版本为 `2.1.0-beta.2`，同步协议和地图格式均为版本 2。客户端 Xaero 反射适配器固定支持：
 
 - Xaero's World Map `1.25.1`
 - Xaero's Minimap `22.11.1`
