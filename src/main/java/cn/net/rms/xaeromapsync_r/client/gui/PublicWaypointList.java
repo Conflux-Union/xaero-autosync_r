@@ -11,6 +11,8 @@ import net.minecraft.network.chat.TranslatableComponent;
 final class PublicWaypointList extends ObjectSelectionList<PublicWaypointList.Entry> {
 	PublicWaypointList(Minecraft minecraft, int width, int height, int top, int bottom, int itemHeight) {
 		super(minecraft, width, height, top, bottom, itemHeight);
+		setRenderBackground(false);
+		setRenderTopAndBottom(false);
 		setRenderSelection(true);
 	}
 

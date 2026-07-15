@@ -15,6 +15,8 @@ final class LocalWaypointList extends ObjectSelectionList<LocalWaypointList.Entr
 	LocalWaypointList(Minecraft minecraft, int width, int height, int top, int bottom, int itemHeight,
 			Consumer<XaeroLocalWaypoint> selectionListener) {
 		super(minecraft, width, height, top, bottom, itemHeight);
+		setRenderBackground(false);
+		setRenderTopAndBottom(false);
 		this.selectionListener = selectionListener;
 		setRenderSelection(true);
 	}
