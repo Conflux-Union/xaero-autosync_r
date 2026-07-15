@@ -29,6 +29,7 @@ public final class XaeroWaypointAdapters {
 			return new ReflectiveXaeroWaypointAdapter(
 				bridge,
 				() -> minecraft.level == null ? null : minecraft.level.dimension().location().toString(),
+				() -> minecraft.player == null ? null : minecraft.player.getUUID(),
 				minecraft::isSameThread
 			);
 		} catch (ReflectiveOperationException | LinkageError exception) {

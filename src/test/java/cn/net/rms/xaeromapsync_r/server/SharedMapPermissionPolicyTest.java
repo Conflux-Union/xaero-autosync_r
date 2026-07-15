@@ -56,21 +56,20 @@ final class SharedMapPermissionPolicyTest {
 	}
 
 	@Test
-	void onlyCreatorOrOperatorCanMutate() {
+	void sharedWaypointsRejectUpdatesButCreatorAndOperatorCanDelete() {
 		PublicWaypoint current = storedWaypoint(WaypointVisibility.PUBLIC, null, 1, 1);
 		PublicWaypoint submitted = submittedFor(current, WaypointVisibility.PUBLIC, 2, 2);
 
 		assertThrows(IllegalArgumentException.class,
 				() -> policy.prepareUpdate(outsider, current, submitted));
-		PublicWaypoint creatorUpdate = policy.prepareUpdate(creator, current, submitted);
-		PublicWaypoint operatorUpdate = policy.prepareUpdate(operator, current, submitted);
-
-		assertEquals(CREATOR_ID, creatorUpdate.creatorId());
-		assertEquals(CREATOR_ID, operatorUpdate.creatorId());
+		assertThrows(IllegalArgumentException.class, () -> policy.prepareUpdate(creator, current, submitted));
+		assertThrows(IllegalArgumentException.class, () -> policy.prepareUpdate(operator, current, submitted));
+		policy.validateDelete(creator, current);
+		policy.validateDelete(operator, current);
 	}
 
 	@Test
-	void teamAclRestrictsPlayersButOperatorBypassesTeamDecision() {
+	void updateLockAlsoAppliesWhenAnOperatorBypassesRegionAcl() {
 		PublicWaypoint current = storedWaypoint(WaypointVisibility.PUBLIC, null, 1, 1);
 		RegionKey region = policy.regionOf(current);
 		regionAccess.allowTeam(region, "staff");
@@ -78,7 +77,7 @@ final class SharedMapPermissionPolicyTest {
 
 		assertThrows(IllegalArgumentException.class,
 				() -> policy.prepareUpdate(creator, current, submitted));
-		policy.prepareUpdate(operator, current, submitted);
+		assertThrows(IllegalArgumentException.class, () -> policy.prepareUpdate(operator, current, submitted));
 	}
 
 	@Test

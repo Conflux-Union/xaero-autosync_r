@@ -1,23 +1,26 @@
 package cn.net.rms.xaeromapsync_r.xaero;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import net.minecraft.resources.ResourceKey;
 
 final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Method getCurrentSession;
 	private final Method getWaypointsManager;
 	private final Method getModMain;
 	private final Method getCurrentWorld;
-	private final Method getAutoWorld;
 	private final Method getCurrentSet;
-	private final Method getSets;
 	private final Method getList;
 	private final Method getSetName;
+	private final Method getWorldId;
+	private final Method getDimensionKey;
+	private final Class<?> waypointScreenClass;
+	private final Method getSelectedWaypoints;
+	private final Field displayedWorld;
 	private final Method getSettings;
 	private final Method saveWaypoints;
 	private final Constructor<?> waypointConstructor;
@@ -27,6 +30,7 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Method getName;
 	private final Method getSymbol;
 	private final Method getColor;
+	private final Method isServerWaypoint;
 	private final Method setX;
 	private final Method setY;
 	private final Method setZ;
@@ -50,11 +54,16 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		getWaypointsManager = requireMethod(sessionClass, "getWaypointsManager", managerClass);
 		getModMain = requireMethod(sessionClass, "getModMain", modMainClass);
 		getCurrentWorld = requireMethod(managerClass, "getCurrentWorld", worldClass);
-		getAutoWorld = requireMethod(managerClass, "getAutoWorld", worldClass);
 		getCurrentSet = requireMethod(worldClass, "getCurrentSet", setClass);
-		getSets = requireMethod(worldClass, "getSets", java.util.HashMap.class);
 		getList = requireMethod(setClass, "getList", java.util.ArrayList.class);
 		getSetName = requireMethod(setClass, "getName", String.class);
+		getWorldId = requireMethod(worldClass, "getId", String.class);
+		getDimensionKey = requireMethod(managerClass, "getDimensionKeyForDirectoryName", ResourceKey.class, String.class);
+		waypointScreenClass = Class.forName("xaero.common.gui.GuiWaypoints", false, classLoader);
+		getSelectedWaypoints = waypointScreenClass.getDeclaredMethod("getSelectedWaypointsList");
+		getSelectedWaypoints.setAccessible(true);
+		displayedWorld = waypointScreenClass.getDeclaredField("displayedWorld");
+		displayedWorld.setAccessible(true);
 		getSettings = requireMethod(modMainClass, "getSettings", settingsClass);
 		saveWaypoints = requireMethod(settingsClass, "saveWaypoints", void.class, worldClass);
 		waypointConstructor = waypointClass.getConstructor(int.class, int.class, int.class, String.class, String.class, int.class);
@@ -64,6 +73,7 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		getName = requireMethod(waypointClass, "getName", String.class);
 		getSymbol = requireMethod(waypointClass, "getSymbol", String.class);
 		getColor = requireMethod(waypointClass, "getColor", int.class);
+		isServerWaypoint = requireMethod(waypointClass, "isServerWaypoint", boolean.class);
 		setX = requireMethod(waypointClass, "setX", void.class, int.class);
 		setY = requireMethod(waypointClass, "setY", void.class, int.class);
 		setZ = requireMethod(waypointClass, "setZ", void.class, int.class);
@@ -85,28 +95,33 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException {
-		Object world = autoWorld();
-		Map<String, Object> sets = (Map<String, Object>) invoke(getSets, world);
-		if (sets == null) {
-			throw new IllegalStateException("Xaero waypoint sets are not initialized");
+	public SelectedWaypoint selectedWaypoint(Object screen) throws ReflectiveOperationException {
+		if (!waypointScreenClass.isInstance(screen)) {
+			throw new IllegalArgumentException("The active screen is not Xaero's waypoint manager");
 		}
-
-		List<LocalWaypointValues> result = new ArrayList<>();
-		for (Object set : new ArrayList<>(sets.values())) {
-			if (set == null) {
-				continue;
-			}
-			String category = (String) invoke(getSetName, set);
-			List<Object> waypoints = (List<Object>) invoke(getList, set);
-			for (Object waypoint : new ArrayList<>(waypoints)) {
-				WaypointValues values = readValues(waypoint);
-				if (!XaeroWaypointIdentity.isManagedName(values.name)) {
-					result.add(new LocalWaypointValues(values, category));
-				}
-			}
+		List<Object> selected = (List<Object>) invoke(getSelectedWaypoints, screen);
+		if (selected.size() != 1) {
+			throw new IllegalArgumentException("Select exactly one Xaero waypoint");
 		}
-		return result;
+		Object world = displayedWorld.get(screen);
+		if (world == null) {
+			throw new IllegalStateException("Xaero displayed waypoint world is not initialized");
+		}
+		Object set = invoke(getCurrentSet, world);
+		if (set == null) {
+			throw new IllegalStateException("Xaero displayed waypoint set is not initialized");
+		}
+		String category = (String) invoke(getSetName, set);
+		Object waypoint = selected.get(0);
+		if ((boolean) invoke(isServerWaypoint, waypoint)) {
+			throw new IllegalArgumentException("Xaero server waypoints cannot be re-shared");
+		}
+		Object manager = currentManager();
+		ResourceKey<?> dimension = (ResourceKey<?>) invoke(getDimensionKey, manager, invoke(getWorldId, world));
+		if (dimension == null) {
+			throw new IllegalArgumentException("The selected Xaero waypoint world is not a Minecraft dimension");
+		}
+		return new SelectedWaypoint(waypoint, world, readValues(waypoint), category, dimension.location().toString());
 	}
 
 	@Override
@@ -139,15 +154,6 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		Object world = invoke(getCurrentWorld, manager);
 		if (world == null) {
 			throw new IllegalStateException("Xaero current waypoint world is not initialized");
-		}
-		return world;
-	}
-
-	private Object autoWorld() throws ReflectiveOperationException {
-		Object manager = currentManager();
-		Object world = invoke(getAutoWorld, manager);
-		if (world == null) {
-			throw new IllegalStateException("Xaero automatic waypoint world is not initialized");
 		}
 		return world;
 	}

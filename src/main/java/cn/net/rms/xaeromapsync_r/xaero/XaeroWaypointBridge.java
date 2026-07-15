@@ -5,7 +5,7 @@ import java.util.List;
 interface XaeroWaypointBridge {
 	Target currentTarget() throws ReflectiveOperationException;
 
-	List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException;
+	SelectedWaypoint selectedWaypoint(Object screen) throws ReflectiveOperationException;
 
 	Object create(WaypointValues values) throws ReflectiveOperationException;
 
@@ -33,13 +33,27 @@ interface XaeroWaypointBridge {
 		}
 	}
 
-	final class LocalWaypointValues {
+	final class SelectedWaypoint {
+		private final Object nativeWaypoint;
+		private final Object world;
 		private final WaypointValues values;
 		private final String category;
+		private final String dimension;
 
-		LocalWaypointValues(WaypointValues values, String category) {
+		SelectedWaypoint(Object nativeWaypoint, Object world, WaypointValues values, String category, String dimension) {
+			this.nativeWaypoint = nativeWaypoint;
+			this.world = world;
 			this.values = values;
 			this.category = category;
+			this.dimension = dimension;
+		}
+
+		Object nativeWaypoint() {
+			return nativeWaypoint;
+		}
+
+		Object world() {
+			return world;
 		}
 
 		WaypointValues values() {
@@ -48,6 +62,10 @@ interface XaeroWaypointBridge {
 
 		String category() {
 			return category;
+		}
+
+		String dimension() {
+			return dimension;
 		}
 	}
 }

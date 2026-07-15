@@ -23,12 +23,18 @@ import cn.net.rms.xaeromapsync_r.network.SharedMapNetworking;
 import cn.net.rms.xaeromapsync_r.network.TileDataPayload;
 import cn.net.rms.xaeromapsync_r.network.WaypointSnapshotPayload;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
+import cn.net.rms.xaeromapsync_r.waypoint.WaypointVisibility;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroDetector;
 import cn.net.rms.xaeromapsync_r.xaero.ReflectiveXaeroMapAdapter;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroMapAdapter;
-import cn.net.rms.xaeromapsync_r.xaero.XaeroLocalWaypointReadResult;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointAdapter;
 import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointAdapters;
+import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointMutation;
+import cn.net.rms.xaeromapsync_r.xaero.XaeroWaypointReconcileResult;
+import java.util.Optional;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.TranslatableComponent;
 
 public final class SharedMapClient {
 	private static boolean connectedToSharedMapServer;
@@ -53,6 +59,7 @@ public final class SharedMapClient {
 	private static long syncingRootHash;
 	private static long lastMapProgressMillis;
 	private static long retryMapSyncAtMillis;
+	private static boolean waypointSanitizationPending = true;
 
 	private SharedMapClient() {
 	}
@@ -69,6 +76,7 @@ public final class SharedMapClient {
 		previousDimension = currentDimension();
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			SharedMapNetworking.tickClientTransfers();
+			sanitizeWaypointsIfNeeded();
 			handleConfigChanges();
 			handleSyncWatchdog();
 			if (++persistenceTicks >= 200) {
@@ -93,6 +101,7 @@ public final class SharedMapClient {
 		resetMapQueues();
 		WAYPOINTS.replace(java.util.List.of());
 		reconcileWaypoints();
+		waypointSanitizationPending = true;
 		TILE_DATA.saveIfDirty();
 	}
 
@@ -113,6 +122,7 @@ public final class SharedMapClient {
 	}
 
 	public static void handleWaypointError(String message) {
+		clearPendingWaypointMutations();
 		XaeroMapsync_r.LOGGER.warn("Public waypoint sync error: {}", message);
 		if (SharedMapClientConfig.get().notificationsEnabled() && net.minecraft.client.Minecraft.getInstance().player != null) {
 			net.minecraft.client.Minecraft.getInstance().player.displayClientMessage(new net.minecraft.network.chat.TextComponent(message), false);
@@ -246,6 +256,17 @@ public final class SharedMapClient {
 		if (waypointAdapter != null && waypointAdapter.isAvailable()) waypointAdapter.reconcile(WAYPOINTS.snapshot());
 	}
 
+	private static void sanitizeWaypointsIfNeeded() {
+		if (!waypointSanitizationPending || waypointAdapter == null || !waypointAdapter.isAvailable()) {
+			return;
+		}
+		XaeroWaypointReconcileResult result = waypointAdapter.reconcile(WAYPOINTS.snapshot());
+		if (result.outcome() == XaeroWaypointReconcileResult.Outcome.APPLIED
+				|| result.outcome() == XaeroWaypointReconcileResult.Outcome.NO_CHANGES) {
+			waypointSanitizationPending = false;
+		}
+	}
+
 	private static void handleConfigChanges() {
 		boolean mapEnabled = SharedMapClientConfig.get().mapSyncEnabled() && mapSyncAvailable();
 		boolean waypointsEnabled = SharedMapClientConfig.get().publicWaypointsEnabled();
@@ -290,10 +311,81 @@ public final class SharedMapClient {
 	public static int indexedTileCount() { return MAP_TILES.totalCount(); }
 	public static int pendingTileCount() { return TILE_REQUEST_QUEUE.size() + tileRequestsInFlight; }
 	public static java.util.List<PublicWaypoint> waypointSnapshot() { return WAYPOINTS.snapshot(); }
-	public static XaeroLocalWaypointReadResult readLocalWaypoints() {
-		return waypointAdapter == null
-				? XaeroLocalWaypointReadResult.notReady("Xaero waypoint adapter is not initialized")
-				: waypointAdapter.readLocalWaypoints();
+
+	public static void shareSelectedXaeroWaypoint(Screen screen, WaypointVisibility visibility) {
+		Minecraft minecraft = Minecraft.getInstance();
+		try {
+			requireWaypointMutationReady(minecraft);
+			XaeroWaypointMutation mutation = waypointAdapter.prepareShare(screen, visibility, WAYPOINTS.snapshot(),
+					minecraft.player.getUUID(), minecraft.player.getGameProfile().getName());
+			if (mutation.update()) {
+				SharedMapNetworking.updateWaypoint(mutation.waypoint());
+			} else {
+				SharedMapNetworking.createWaypoint(mutation.waypoint());
+			}
+			displayWaypointMessage(new TranslatableComponent("screen.xaero-mapsync_r.share.submitted",
+					mutation.waypoint().name()));
+		} catch (RuntimeException exception) {
+			clearPendingWaypointMutations();
+			XaeroMapsync_r.LOGGER.warn("Failed to share selected Xaero waypoint", exception);
+			displayWaypointMessage(new TranslatableComponent("screen.xaero-mapsync_r.share.failed", message(exception)));
+		}
+	}
+
+	public static void unshareSelectedXaeroWaypoint(Screen screen) {
+		Minecraft minecraft = Minecraft.getInstance();
+		try {
+			requireWaypointMutationReady(minecraft);
+			PublicWaypoint waypoint = waypointAdapter.prepareUnshare(screen, WAYPOINTS.snapshot(), minecraft.player.getUUID());
+			SharedMapNetworking.deleteWaypoint(waypoint);
+			displayWaypointMessage(new TranslatableComponent("screen.xaero-mapsync_r.share.remove_submitted", waypoint.name()));
+		} catch (RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to unshare selected Xaero waypoint", exception);
+			displayWaypointMessage(new TranslatableComponent("screen.xaero-mapsync_r.share.failed", message(exception)));
+		}
+	}
+
+	public static Optional<WaypointVisibility> selectedXaeroWaypointVisibility(Screen screen) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (!connectedToSharedMapServer || !SharedMapClientConfig.get().publicWaypointsEnabled()
+				|| minecraft.player == null || waypointAdapter == null || !waypointAdapter.isAvailable()) {
+			return Optional.empty();
+		}
+		return waypointAdapter.selectedVisibility(screen, WAYPOINTS.snapshot(), minecraft.player.getUUID());
+	}
+
+	private static void requireWaypointMutationReady(Minecraft minecraft) {
+		if (!connectedToSharedMapServer) {
+			throw new IllegalStateException("Not connected to a shared map server");
+		}
+		if (!SharedMapClientConfig.get().publicWaypointsEnabled()) {
+			throw new IllegalStateException("Shared waypoints are disabled in the client config");
+		}
+		if (minecraft.player == null) {
+			throw new IllegalStateException("Minecraft player is not initialized");
+		}
+		if (waypointAdapter == null || !waypointAdapter.isAvailable()) {
+			throw new IllegalStateException("Xaero waypoint integration is unavailable");
+		}
+	}
+
+	private static void clearPendingWaypointMutations() {
+		if (waypointAdapter != null) {
+			waypointAdapter.clearPendingMutations();
+		}
+	}
+
+	private static void displayWaypointMessage(net.minecraft.network.chat.Component message) {
+		Minecraft minecraft = Minecraft.getInstance();
+		if (minecraft.player != null) {
+			minecraft.player.displayClientMessage(message, false);
+		}
+	}
+
+	private static String message(RuntimeException exception) {
+		return exception.getMessage() == null || exception.getMessage().isBlank()
+				? exception.getClass().getSimpleName()
+				: exception.getMessage();
 	}
 
 	private static void markRootCompleteIfIdle() {

@@ -7,6 +7,7 @@ import cn.net.rms.xaeromapsync_r.server.access.SharedMapActor;
 import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import cn.net.rms.xaeromapsync_r.waypoint.WaypointVisibility;
+import cn.net.rms.xaeromapsync_r.waypoint.XaeroWaypointPalette;
 import java.util.Objects;
 
 public final class SharedMapPermissionPolicy {
@@ -37,7 +38,8 @@ public final class SharedMapPermissionPolicy {
 		}
 		validateRegionChange(actor, regionOf(submitted));
 		String teamName = submitted.visibility() == WaypointVisibility.TEAM ? actor.teamName() : null;
-		return submitted.withOwnership(actor.playerId(), actor.playerName(), teamName);
+		return submitted.withColor(XaeroWaypointPalette.normalize(submitted.color()))
+				.withOwnership(actor.playerId(), actor.playerName(), teamName);
 	}
 
 	public PublicWaypoint prepareUpdate(SharedMapActor actor, PublicWaypoint current, PublicWaypoint submitted) {
@@ -50,22 +52,7 @@ public final class SharedMapPermissionPolicy {
 		if (current.deleted()) {
 			throw new IllegalArgumentException("Deleted waypoint cannot be updated");
 		}
-		if (!canMutate(actor, current)) {
-			throw new IllegalArgumentException("Waypoint permission denied");
-		}
-		String existingTeam = current.visibility() == WaypointVisibility.TEAM ? current.teamName() : null;
-		validateVisibility(actor, submitted.visibility(), existingTeam);
-		RegionKey currentRegion = regionOf(current);
-		RegionKey targetRegion = regionOf(submitted);
-		validateRegionChange(actor, currentRegion);
-		if (!currentRegion.equals(targetRegion)) {
-			validateRegionChange(actor, targetRegion);
-		}
-		String teamName = null;
-		if (submitted.visibility() == WaypointVisibility.TEAM) {
-			teamName = existingTeam == null ? actor.teamName() : existingTeam;
-		}
-		return submitted.withOwnership(current.creatorId(), current.creatorName(), teamName);
+		throw new IllegalArgumentException("Shared waypoints are locked; delete and recreate the waypoint instead");
 	}
 
 	public void validateDelete(SharedMapActor actor, PublicWaypoint current) {

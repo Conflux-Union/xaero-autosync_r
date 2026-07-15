@@ -131,6 +131,11 @@ public final class PublicWaypoint {
 		return new PublicWaypoint(id, ownerId, ownerName, name, dimension, x, y, z, symbol, color, category, visibility, ownerTeamName, revision, deleted, createdAtMillis, updatedAtMillis);
 	}
 
+	public PublicWaypoint withColor(int normalizedColor) {
+		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, normalizedColor, category,
+				visibility, teamName, revision, deleted, createdAtMillis, updatedAtMillis);
+	}
+
 	public void validate() {
 		if (id == null) {
 			throw new IllegalArgumentException("Waypoint id is required");

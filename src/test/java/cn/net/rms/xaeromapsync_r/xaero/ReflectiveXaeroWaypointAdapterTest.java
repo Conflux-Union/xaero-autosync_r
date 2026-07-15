@@ -3,10 +3,12 @@ package cn.net.rms.xaeromapsync_r.xaero;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import cn.net.rms.xaeromapsync_r.waypoint.WaypointVisibility;
+import cn.net.rms.xaeromapsync_r.waypoint.XaeroWaypointPalette;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -16,13 +18,14 @@ import org.junit.jupiter.api.Test;
 
 final class ReflectiveXaeroWaypointAdapterTest {
 	private static final String OVERWORLD = "minecraft:overworld";
+	private static final UUID PLAYER_ID = UUID.fromString("00000000-0000-0000-0000-000000000099");
 
 	@Test
-	void reconcileFiltersInputUpdatesInPlaceAndOnlyDeletesManagedPoints() {
+	void reconcileFiltersInputNormalizesColorsAndOnlyDeletesManagedPoints() {
 		UUID updateId = UUID.fromString("00000000-0000-0000-0000-000000000001");
 		UUID staleId = UUID.fromString("00000000-0000-0000-0000-000000000002");
 		UUID createId = UUID.fromString("00000000-0000-0000-0000-000000000003");
-		FakePoint privatePoint = new FakePoint(new WaypointValues(1, 2, 3, "Private home", "H", 1));
+		FakePoint privatePoint = point("Private home", 1, 2, 3, "H", 1);
 		FakePoint updatePoint = managed(updateId, "Old", 1, 2, 3, "O", 2);
 		FakePoint duplicatePoint = managed(updateId, "Duplicate", 4, 5, 6, "D", 3);
 		FakePoint stalePoint = managed(staleId, "Stale", 7, 8, 9, "S", 4);
@@ -30,13 +33,12 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
 
 		Collection<PublicWaypoint> input = Arrays.asList(
-			waypoint(updateId, "Updated", OVERWORLD, 10.9, 64.0, -2.1, "U", 0x112233, WaypointVisibility.PUBLIC, false),
-			waypoint(createId, "Created", OVERWORLD, -0.1, 70.8, 5.0, "", 0x445566, WaypointVisibility.PUBLIC, false),
-			waypoint(UUID.randomUUID(), "Deleted", OVERWORLD, 0, 0, 0, "D", 0, WaypointVisibility.PUBLIC, true),
-			waypoint(UUID.randomUUID(), "Private", OVERWORLD, 0, 0, 0, "P", 0, WaypointVisibility.PRIVATE, false),
-			waypoint(UUID.randomUUID(), "Nether", "minecraft:the_nether", 0, 0, 0, "N", 0, WaypointVisibility.PUBLIC, false),
-			null
-		);
+				waypoint(updateId, UUID.randomUUID(), "Updated", OVERWORLD, 10.9, 64.0, -2.1, "U", 0x55FFFF, WaypointVisibility.PUBLIC, false, 1L),
+				waypoint(createId, UUID.randomUUID(), "Created", OVERWORLD, -0.1, 70.8, 5.0, "", 0x445566, WaypointVisibility.TEAM, false, 1L),
+				waypoint(UUID.randomUUID(), UUID.randomUUID(), "Deleted", OVERWORLD, 0, 0, 0, "D", 0, WaypointVisibility.PUBLIC, true, 1L),
+				waypoint(UUID.randomUUID(), UUID.randomUUID(), "Private", OVERWORLD, 0, 0, 0, "P", 0, WaypointVisibility.PRIVATE, false, 1L),
+				waypoint(UUID.randomUUID(), UUID.randomUUID(), "Nether", "minecraft:the_nether", 0, 0, 0, "N", 0, WaypointVisibility.PUBLIC, false, 1L),
+				null);
 
 		XaeroWaypointReconcileResult result = adapter.reconcile(input);
 
@@ -50,7 +52,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals(3, bridge.points.size());
 		assertSame(privatePoint, bridge.points.get(0));
 		assertSame(updatePoint, bridge.points.get(1));
-		assertEquals(new WaypointValues(10, 64, -3, XaeroWaypointIdentity.managedName("Updated", updateId), "U", 0x112233), updatePoint.values);
+		assertEquals(new WaypointValues(10, 64, -3, XaeroWaypointIdentity.managedName("Updated", updateId), "U", 11), updatePoint.values);
 		assertTrue(bridge.points.stream().anyMatch(point -> XaeroWaypointIdentity.parse(point.values.name).filter(createId::equals).isPresent()));
 		assertFalse(bridge.points.contains(duplicatePoint));
 		assertFalse(bridge.points.contains(stalePoint));
@@ -59,14 +61,145 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	@Test
 	void reconcileDoesNotSaveWhenNoValuesChanged() {
 		UUID id = UUID.randomUUID();
-		PublicWaypoint waypoint = waypoint(id, "Spawn", OVERWORLD, 1, 64, 2, "S", 0xffffff, WaypointVisibility.PUBLIC, false);
-		FakeBridge bridge = new FakeBridge(managed(id, "Spawn", 1, 64, 2, "S", 0xffffff));
+		PublicWaypoint waypoint = waypoint(id, UUID.randomUUID(), "Spawn", OVERWORLD, 1, 64, 2, "S", 15, WaypointVisibility.PUBLIC, false, 1L);
+		FakeBridge bridge = new FakeBridge(managed(id, "Spawn", 1, 64, 2, "S", 15));
 		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
 
 		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(waypoint));
 
 		assertEquals(XaeroWaypointReconcileResult.Outcome.NO_CHANGES, result.outcome());
 		assertEquals(0, bridge.saveCount);
+	}
+
+	@Test
+	void selectedNativeWaypointIsSharedWithoutCreatingASecondCreatorCopy() {
+		FakePoint source = point("Factory", 12, 70, -8, "F", 11);
+		FakeBridge bridge = new FakeBridge(source);
+		bridge.select(source, "machines", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroWaypointMutation create = adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(), PLAYER_ID, "Builder");
+		PublicWaypoint accepted = withServerState(create.waypoint(), 5L);
+		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(accepted));
+
+		assertFalse(create.update());
+		assertEquals("Factory", create.waypoint().name());
+		assertEquals("machines", create.waypoint().category());
+		assertEquals(11, create.waypoint().color());
+		assertEquals(XaeroWaypointReconcileResult.Outcome.NO_CHANGES, result.outcome());
+		assertEquals(List.of(source), bridge.points);
+		assertEquals("Factory", XaeroWaypointIdentity.displayName(source.values.name));
+		assertEquals(create.waypoint().id(), XaeroWaypointIdentity.parse(source.values.name).orElseThrow());
+		assertEquals(1, bridge.saveCount);
+	}
+
+	@Test
+	void rejectedCreateClearsPendingLockAndReusesPersistedIdentityOnRetry() {
+		FakePoint source = point("Factory", 12, 70, -8, "F", 11);
+		FakeBridge bridge = new FakeBridge(source);
+		bridge.select(source, "machines", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroWaypointMutation first = adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(), PLAYER_ID,
+				"Builder");
+		assertEquals(WaypointVisibility.PUBLIC,
+				adapter.selectedVisibility(new Object(), List.of(), PLAYER_ID).orElseThrow());
+
+		adapter.clearPendingMutations();
+		assertEquals(WaypointVisibility.PRIVATE,
+				adapter.selectedVisibility(new Object(), List.of(), PLAYER_ID).orElseThrow());
+		assertEquals("Factory", XaeroWaypointIdentity.displayName(source.values.name));
+		assertFalse(source.values.name.startsWith("\uD83D\uDD12 "));
+		assertEquals(first.waypoint().id(), XaeroWaypointIdentity.parse(source.values.name).orElseThrow());
+		XaeroWaypointMutation retry = adapter.prepareShare(new Object(), WaypointVisibility.TEAM, List.of(), PLAYER_ID,
+				"Builder");
+
+		assertEquals(first.waypoint().id(), retry.waypoint().id());
+		assertEquals(WaypointVisibility.TEAM, retry.waypoint().visibility());
+	}
+
+	@Test
+	void creatorCannotReshareLockedWaypointButCanUnshareIt() {
+		FakePoint source = point("Depot", 1, 64, 2, "D", 10);
+		FakeBridge bridge = new FakeBridge(source);
+		bridge.select(source, "default", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		XaeroWaypointMutation create = adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(), PLAYER_ID, "Builder");
+		PublicWaypoint accepted = withServerState(create.waypoint(), 3L);
+		adapter.reconcile(List.of(accepted));
+		source.values = new WaypointValues(5, 65, 9, "Depot 2", "X", 12);
+
+		assertThrows(IllegalArgumentException.class,
+				() -> adapter.prepareShare(new Object(), WaypointVisibility.TEAM, List.of(accepted), PLAYER_ID, "Builder"));
+		PublicWaypoint deleted = adapter.prepareUnshare(new Object(), List.of(accepted), PLAYER_ID);
+
+		assertSame(accepted, deleted);
+	}
+
+	@Test
+	void creatorMarkerSurvivesRestartAndRestoresTheNativePointInPlace() {
+		UUID id = UUID.randomUUID();
+		FakePoint source = managed(id, "Edited offline", 9, 70, 11, "E", 12);
+		FakeBridge bridge = new FakeBridge(source);
+		ReflectiveXaeroWaypointAdapter restarted = adapter(bridge, true);
+		PublicWaypoint serverCopy = waypoint(id, PLAYER_ID, "Before edit", OVERWORLD, 1, 64, 2, "B", 10,
+				WaypointVisibility.PUBLIC, false, 4L);
+
+		XaeroWaypointReconcileResult result = restarted.reconcile(List.of(serverCopy));
+
+		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, result.outcome());
+		assertEquals(1, result.updated());
+		assertEquals(List.of(source), bridge.points);
+		assertEquals(1, source.values.x);
+		assertEquals("Before edit", XaeroWaypointIdentity.displayName(source.values.name));
+	}
+
+	@Test
+	void editedRemoteCopyIsRestoredInPlaceInsteadOfDuplicated() {
+		UUID id = UUID.randomUUID();
+		FakePoint remote = managed(id, "Remote", 1, 64, 2, "R", 4);
+		FakeBridge bridge = new FakeBridge(remote);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		PublicWaypoint serverCopy = waypoint(id, UUID.randomUUID(), "Remote", OVERWORLD, 1, 64, 2, "R", 4,
+				WaypointVisibility.PUBLIC, false, 2L);
+		adapter.reconcile(List.of(serverCopy));
+		remote.values = new WaypointValues(7, 80, 8, "Changed locally", "C", 3);
+
+		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(serverCopy));
+
+		assertEquals(1, result.updated());
+		assertEquals(List.of(remote), bridge.points);
+		assertEquals(id, XaeroWaypointIdentity.parse(remote.values.name).orElseThrow());
+		assertEquals("Remote", XaeroWaypointIdentity.displayName(remote.values.name));
+	}
+
+	@Test
+	void selectedVisibilityReflectsTheSharedRecord() {
+		UUID id = UUID.randomUUID();
+		FakePoint source = managed(id, "Team point", 1, 64, 2, "T", 4);
+		FakeBridge bridge = new FakeBridge(source);
+		bridge.select(source, "default", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		PublicWaypoint shared = waypoint(id, PLAYER_ID, "Team point", OVERWORLD, 1, 64, 2, "T", 4,
+				WaypointVisibility.TEAM, false, 2L);
+
+		assertEquals(WaypointVisibility.TEAM,
+				adapter.selectedVisibility(new Object(), List.of(shared), PLAYER_ID).orElseThrow());
+	}
+
+	@Test
+	void nonCreatorCannotUpdateOrUnshareManagedWaypoint() {
+		UUID id = UUID.randomUUID();
+		FakePoint remote = managed(id, "Remote", 1, 2, 3, "R", 4);
+		FakeBridge bridge = new FakeBridge(remote);
+		bridge.select(remote, "default", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		PublicWaypoint waypoint = waypoint(id, UUID.randomUUID(), "Remote", OVERWORLD, 1, 2, 3, "R", 4, WaypointVisibility.PUBLIC, false, 2L);
+
+		assertThrows(IllegalArgumentException.class,
+				() -> adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(waypoint), PLAYER_ID, "Builder"));
+		assertThrows(IllegalArgumentException.class,
+				() -> adapter.prepareUnshare(new Object(), List.of(waypoint), PLAYER_ID));
 	}
 
 	@Test
@@ -99,7 +232,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	void saveFailureRollsBackListAndInPlaceUpdates() {
 		UUID updateId = UUID.randomUUID();
 		UUID staleId = UUID.randomUUID();
-		FakePoint privatePoint = new FakePoint(new WaypointValues(0, 0, 0, "Private", "P", 1));
+		FakePoint privatePoint = point("Private", 0, 0, 0, "P", 1);
 		FakePoint updatePoint = managed(updateId, "Before", 1, 2, 3, "B", 2);
 		FakePoint stalePoint = managed(staleId, "Stale", 4, 5, 6, "S", 3);
 		WaypointValues originalUpdate = updatePoint.values;
@@ -108,9 +241,8 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
 
 		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(
-			waypoint(updateId, "After", OVERWORLD, 10, 20, 30, "A", 4, WaypointVisibility.PUBLIC, false),
-			waypoint(UUID.randomUUID(), "New", OVERWORLD, 40, 50, 60, "N", 5, WaypointVisibility.PUBLIC, false)
-		));
+				waypoint(updateId, UUID.randomUUID(), "After", OVERWORLD, 10, 20, 30, "A", 4, WaypointVisibility.PUBLIC, false, 1L),
+				waypoint(UUID.randomUUID(), UUID.randomUUID(), "New", OVERWORLD, 40, 50, 60, "N", 5, WaypointVisibility.PUBLIC, false, 1L)));
 
 		assertEquals(XaeroWaypointReconcileResult.Outcome.FAILED, result.outcome());
 		assertEquals(List.of(privatePoint, updatePoint, stalePoint), bridge.points);
@@ -119,68 +251,36 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	}
 
 	@Test
-	void localReadReturnsSortedDefensiveSnapshotsWithExplicitDimension() {
-		FakeBridge bridge = new FakeBridge();
-		bridge.localPoints.add(local("Zulu", 3, 4, 5, "Z", 7, "beta"));
-		bridge.localPoints.add(local("Alpha", 1, 2, 3, "A", 6, "alpha"));
-		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
-
-		XaeroLocalWaypointReadResult result = adapter.readLocalWaypoints();
-
-		assertEquals(XaeroLocalWaypointReadResult.Outcome.LOADED, result.outcome());
-		assertEquals(List.of("Alpha", "Zulu"), result.waypoints().stream().map(XaeroLocalWaypoint::name).toList());
-		assertTrue(result.waypoints().stream().allMatch(waypoint -> OVERWORLD.equals(waypoint.dimension())));
-		assertThrowsUnsupported(() -> result.waypoints().clear());
-	}
-
-	@Test
-	void uninitializedLocalReadCanBeRetriedWithoutOpeningCircuit() {
-		FakeBridge bridge = new FakeBridge();
-		bridge.localNotReady = true;
-		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
-
-		XaeroLocalWaypointReadResult first = adapter.readLocalWaypoints();
-		bridge.localNotReady = false;
-		XaeroLocalWaypointReadResult second = adapter.readLocalWaypoints();
-
-		assertEquals(XaeroLocalWaypointReadResult.Outcome.NOT_READY, first.outcome());
-		assertTrue(first.retryable());
-		assertEquals(XaeroLocalWaypointReadResult.Outcome.LOADED, second.outcome());
-	}
-
-	@Test
-	void localReadFailureOpensOnlyLocalReadCircuit() {
-		FakeBridge bridge = new FakeBridge();
-		bridge.failLocalRead = true;
-		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
-
-		XaeroLocalWaypointReadResult first = adapter.readLocalWaypoints();
-		XaeroLocalWaypointReadResult second = adapter.readLocalWaypoints();
-
-		assertEquals(XaeroLocalWaypointReadResult.Outcome.FAILED, first.outcome());
-		assertEquals(XaeroLocalWaypointReadResult.Outcome.UNAVAILABLE, second.outcome());
-		assertTrue(adapter.isAvailable());
-		assertEquals(1, bridge.localReadCount);
+	void paletteConvertsLegacyRgbAndArgbToXaeroIndices() {
+		assertEquals(11, XaeroWaypointPalette.normalize(0x55FFFF));
+		assertEquals(11, XaeroWaypointPalette.normalize(0xFF55FFFF));
+		assertEquals(15, XaeroWaypointPalette.normalize(15));
+		assertTrue(XaeroWaypointPalette.normalize(0x123456) >= 0);
+		assertTrue(XaeroWaypointPalette.normalize(0x123456) <= 15);
 	}
 
 	private static ReflectiveXaeroWaypointAdapter adapter(FakeBridge bridge, boolean clientThread) {
-		return new ReflectiveXaeroWaypointAdapter(bridge, () -> OVERWORLD, () -> clientThread);
+		return new ReflectiveXaeroWaypointAdapter(bridge, () -> OVERWORLD, () -> PLAYER_ID, () -> clientThread);
+	}
+
+	private static FakePoint point(String name, int x, int y, int z, String symbol, int color) {
+		return new FakePoint(new WaypointValues(x, y, z, name, symbol, color));
 	}
 
 	private static FakePoint managed(UUID id, String name, int x, int y, int z, String symbol, int color) {
-		return new FakePoint(new WaypointValues(x, y, z, XaeroWaypointIdentity.managedName(name, id), symbol, color));
+		return point(XaeroWaypointIdentity.managedName(name, id), x, y, z, symbol, color);
 	}
 
-	private static XaeroWaypointBridge.LocalWaypointValues local(String name, int x, int y, int z, String symbol, int color, String category) {
-		return new XaeroWaypointBridge.LocalWaypointValues(new WaypointValues(x, y, z, name, symbol, color), category);
+	private static PublicWaypoint waypoint(UUID id, UUID creatorId, String name, String dimension, double x, double y,
+			double z, String symbol, int color, WaypointVisibility visibility, boolean deleted, long revision) {
+		return new PublicWaypoint(id, creatorId, "Creator", name, dimension, x, y, z, symbol, color, "default",
+				visibility, revision, deleted, 1L, 1L);
 	}
 
-	private static void assertThrowsUnsupported(Runnable action) {
-		org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class, action::run);
-	}
-
-	private static PublicWaypoint waypoint(UUID id, String name, String dimension, double x, double y, double z, String symbol, int color, WaypointVisibility visibility, boolean deleted) {
-		return new PublicWaypoint(id, UUID.randomUUID(), "Creator", name, dimension, x, y, z, symbol, color, "default", visibility, 1L, deleted, 1L, 1L);
+	private static PublicWaypoint withServerState(PublicWaypoint waypoint, long revision) {
+		return new PublicWaypoint(waypoint.id(), waypoint.creatorId(), waypoint.creatorName(), waypoint.name(),
+				waypoint.dimension(), waypoint.x(), waypoint.y(), waypoint.z(), waypoint.symbol(), waypoint.color(),
+				waypoint.category(), waypoint.visibility(), revision, false, 1L, 2L);
 	}
 
 	private static final class FakePoint {
@@ -197,13 +297,14 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		private int saveCount;
 		private boolean failOnTarget;
 		private boolean failOnSave;
-		private final List<LocalWaypointValues> localPoints = new ArrayList<>();
-		private boolean localNotReady;
-		private boolean failLocalRead;
-		private int localReadCount;
+		private SelectedWaypoint selected;
 
 		private FakeBridge(FakePoint... points) {
 			this.points.addAll(Arrays.asList(points));
+		}
+
+		private void select(FakePoint point, String category, String dimension) {
+			selected = new SelectedWaypoint(point, world, point.values, category, dimension);
 		}
 
 		@Override
@@ -216,15 +317,12 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		}
 
 		@Override
-		public List<LocalWaypointValues> readLocalWaypoints() throws ReflectiveOperationException {
-			localReadCount++;
-			if (localNotReady) {
-				throw new IllegalStateException("Xaero minimap session is not initialized");
+		public SelectedWaypoint selectedWaypoint(Object screen) {
+			if (selected == null) {
+				throw new IllegalArgumentException("Select exactly one Xaero waypoint");
 			}
-			if (failLocalRead) {
-				throw new ReflectiveOperationException("test local read failure");
-			}
-			return new ArrayList<>(localPoints);
+			return new SelectedWaypoint(selected.nativeWaypoint(), world,
+					((FakePoint) selected.nativeWaypoint()).values, selected.category(), selected.dimension());
 		}
 
 		@Override
