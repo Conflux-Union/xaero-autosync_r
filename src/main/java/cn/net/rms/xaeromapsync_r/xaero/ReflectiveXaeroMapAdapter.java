@@ -21,7 +21,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 /** Reflection-only bridge for Xaero's World Map 1.25.1. */
@@ -236,8 +235,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method setBeingWritten;
 		private final Method isWritingPaused;
 		private final Field lastSaveTimeField;
-		private final Method isAllCachePrepared;
-		private final Method setAllCachePrepared;
 		private final Method isRefreshing;
 		private final Method requestRefresh;
 		private final Method cancelRefresh;
@@ -324,8 +321,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			setBeingWritten = method(mapRegionClass, "setBeingWritten", boolean.class);
 			isWritingPaused = method(mapRegionClass, "isWritingPaused");
 			lastSaveTimeField = field(leveledRegionClass, "lastSaveTime", long.class);
-			isAllCachePrepared = method(leveledRegionClass, "isAllCachePrepared");
-			setAllCachePrepared = method(leveledRegionClass, "setAllCachePrepared", boolean.class);
 			isRefreshing = method(mapRegionClass, "isRefreshing");
 			requestRefresh = method(mapRegionClass, "requestRefresh", mapProcessorClass);
 			cancelRefresh = method(mapRegionClass, "cancelRefresh", mapProcessorClass);
@@ -386,21 +381,21 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					minecraft.level.dimension().location().toString())) {
 				return LocalTileState.REMOTE;
 			}
-			LevelChunk chunk = minecraft.level.getChunkSource().getChunk(chunkX, chunkZ,
-					ChunkStatus.FULL, false);
-			if (chunk == null) return LocalTileState.REMOTE;
-			Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
-			if (chunkCleanField == null || !chunkCleanField.getBoolean(chunk)) {
-				return LocalTileState.GENERATING;
-			}
 			Object session = invoke(currentSession, null);
 			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
 			Object processor = invoke(getMapProcessor, session);
 			if (processor == null) throw new IllegalStateException("Xaero MapProcessor is not initialized");
 			Object xaeroTile = invoke(getMapTile, processor, chunkX, chunkZ);
-			return xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
+			if (xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
-					? LocalTileState.READY
+					&& hasCompleteTileData(xaeroTile)) {
+				return LocalTileState.READY;
+			}
+			LevelChunk chunk = minecraft.level.getChunkSource().getChunkNow(chunkX, chunkZ);
+			if (chunk == null) return LocalTileState.REMOTE;
+			Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
+			return chunkCleanField != null && chunkCleanField.getBoolean(chunk)
+					? LocalTileState.REMOTE
 					: LocalTileState.GENERATING;
 		}
 
@@ -453,12 +448,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (xaeroTile == null || !(Boolean) invoke(isTileLoaded, xaeroTile)
 							|| !(Boolean) invoke(wasTileWrittenOnce, xaeroTile)) return null;
 
-					LevelChunk clientChunk = minecraft.level.getChunkSource().getChunk(chunkX, chunkZ,
-							ChunkStatus.FULL, false);
-					Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
-					if (clientChunk == null || chunkCleanField == null || !chunkCleanField.getBoolean(clientChunk)) {
-						return null;
-					}
 					return snapshotTile(dimension, chunkX, chunkZ, xaeroTile, minecraft);
 				}
 			}
@@ -471,6 +460,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				return false;
 			}
 			return processor == null || isCurrentDimension(dimension, (String) invoke(getCurrentDimension, processor));
+		}
+
+		private boolean hasCompleteTileData(Object xaeroTile) throws ReflectiveOperationException {
+			for (int localZ = 0; localZ < TILE_SIDE; localZ++) {
+				for (int localX = 0; localX < TILE_SIDE; localX++) {
+					Object block = invoke(getMapBlock, xaeroTile, localX, localZ);
+					if (block == null || invoke(getPixelState, block) == null || invoke(getBlockBiome, block) == null) {
+						return false;
+					}
+				}
+			}
+			return true;
 		}
 
 		private MapTile snapshotTile(String dimension, int chunkX, int chunkZ, Object xaeroTile,
@@ -678,7 +679,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			MapTile source = sources.get(0);
 			byte originalRegionLoadState = ((Number) invoke(getRegionLoadState, region)).byteValue();
 			boolean originalBeingWritten = (Boolean) invoke(isBeingWritten, region);
-			boolean originalAllCachePrepared = (Boolean) invoke(isAllCachePrepared, region);
 			boolean originalRefreshing = (Boolean) invoke(isRefreshing, region);
 			boolean originalRegionTerrain = regionHasHadTerrainField.getBoolean(region);
 			boolean removedNativeCacheRequest = false;
@@ -741,8 +741,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					invoke(setChanged, snapshot.chunk, true);
 					invoke(setHasHadTerrain, snapshot.chunk);
 				}
-				// One refresh must observe the complete region mutation. Xaero drops refresh
-				// requests while a previous refresh is active.
+				// Xaero owns allCachePrepared and only invalidates it when refresh processing
+				// actually schedules cache work. Pre-clearing it can queue an impossible save.
 				invoke(requestRefresh, region, processor);
 				deferNativeSave(region, originalBeingWritten);
 			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
@@ -765,7 +765,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						}
 					}
 					regionHasHadTerrainField.setBoolean(region, originalRegionTerrain);
-					invoke(setAllCachePrepared, region, originalAllCachePrepared);
 					invoke(setBeingWritten, region, originalBeingWritten);
 					if (removedNativeCacheRequest && !(Boolean) invoke(toCacheContains, saveLoad, region)) {
 						invoke(requestCache, saveLoad, region);

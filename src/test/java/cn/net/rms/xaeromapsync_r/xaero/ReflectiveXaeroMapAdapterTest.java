@@ -67,6 +67,7 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertEquals("J", signature.fieldDescriptor("lastSaveTime"));
 		assertEquals("()Z", signature.methodDescriptor("isAllCachePrepared"));
 		assertEquals("(Z)V", signature.methodDescriptor("setAllCachePrepared"));
+		assertEquals("(ZLjava/lang/String;)V", signature.methodDescriptor("setShouldCache"));
 		assertNull(signature.methodDescriptor("getLastSaveTime"));
 		assertNull(signature.methodDescriptor("setLastSaveTime"));
 	}

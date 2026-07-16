@@ -8,7 +8,7 @@ import java.util.List;
 import net.minecraft.network.FriendlyByteBuf;
 
 public final class MapNodeRequestPayload {
-	private static final int MAX_REQUESTS = 64;
+	public static final int MAX_REQUESTS = 64;
 	private static final int MAX_DIMENSION_LENGTH = 256;
 	private final long syncId;
 	private final long requestId;

@@ -1,14 +1,21 @@
 package cn.net.rms.xaeromapsync_r.network;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import cn.net.rms.xaeromapsync_r.map.MerkleNodeAddress;
+import cn.net.rms.xaeromapsync_r.config.SharedMapProtocolDefaults;
 import io.netty.buffer.Unpooled;
 import java.util.List;
 import net.minecraft.network.FriendlyByteBuf;
 import org.junit.jupiter.api.Test;
 
 final class MapSyncRequestPayloadTest {
+	@Test
+	void batchTileProtocolUsesVersionSeven() {
+		assertEquals(7, SharedMapProtocolDefaults.PROTOCOL_VERSION);
+	}
+
 	@Test
 	void rootHashRoundTripPreservesCorrelationIds() {
 		MapRootHashPayload decoded = roundTrip(new MapRootHashPayload(
@@ -32,6 +39,21 @@ final class MapSyncRequestPayloadTest {
 		assertEquals(3, decoded.nodes().get(0).level());
 		assertEquals(-7, decoded.nodes().get(0).nodeX());
 		assertEquals(11, decoded.nodes().get(0).nodeZ());
+	}
+
+	@Test
+	void nodeRequestEnforcesProtocolBatchLimit() {
+		List<MerkleNodeAddress> maximumBatch = java.util.stream.IntStream
+				.range(0, MapNodeRequestPayload.MAX_REQUESTS)
+				.mapToObj(index -> new MerkleNodeAddress("minecraft:overworld", 0, index, 0))
+				.toList();
+		assertEquals(MapNodeRequestPayload.MAX_REQUESTS,
+				roundTrip(new MapNodeRequestPayload(901L, 902L, maximumBatch)).nodes().size());
+
+		List<MerkleNodeAddress> oversizedBatch = new java.util.ArrayList<>(maximumBatch);
+		oversizedBatch.add(new MerkleNodeAddress("minecraft:overworld", 0, MapNodeRequestPayload.MAX_REQUESTS, 0));
+		assertThrows(IllegalArgumentException.class,
+				() -> new MapNodeRequestPayload(901L, 902L, oversizedBatch));
 	}
 
 	private static MapRootHashPayload roundTrip(MapRootHashPayload payload) {

@@ -13,10 +13,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.zip.DeflaterOutputStream;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -179,6 +181,38 @@ public final class MapTileDataStoreTest {
 
 		assertEquals(first.contentHash(), index.find("minecraft:overworld", -2, 7).orElseThrow().contentHash());
 		assertEquals(second.contentHash(), index.find("minecraft:the_nether", 4, -9).orElseThrow().contentHash());
+	}
+
+	@Test
+	void rebuildsMissingIndexAsynchronously() throws Exception {
+		MapTile tile = tile("minecraft:overworld", 5, -6, 30);
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+		assertTrue(store.putSynchronously(tile));
+		MapTileIndexStore index = new MapTileIndexStore();
+		CountDownLatch completed = new CountDownLatch(1);
+		AtomicInteger recovered = new AtomicInteger();
+
+		assertTrue(store.recoverIndexAsynchronously(index, count -> {
+			recovered.set(count);
+			completed.countDown();
+		}));
+		assertTrue(completed.await(5, TimeUnit.SECONDS));
+		store.stop();
+
+		assertEquals(1, recovered.get());
+		assertEquals(tile.contentHash(), index.find(tile.dimension(), tile.chunkX(), tile.chunkZ())
+				.orElseThrow().contentHash());
+	}
+
+	@Test
+	void recoveryReadsOnlyMissingOrNewerTileBodies() {
+		MapTileIndexEntry existing = new MapTileIndexEntry("minecraft:overworld", 1, 2, 3L, 4L, 100L);
+
+		assertTrue(MapTileDataStore.shouldReadForRecovery(Optional.empty(), 1L));
+		assertFalse(MapTileDataStore.shouldReadForRecovery(Optional.of(existing), 100L));
+		assertFalse(MapTileDataStore.shouldReadForRecovery(Optional.of(existing), 99L));
+		assertTrue(MapTileDataStore.shouldReadForRecovery(Optional.of(existing), 101L));
 	}
 
 	public static MapTile tile(String dimension, int chunkX, int chunkZ, int offset) {

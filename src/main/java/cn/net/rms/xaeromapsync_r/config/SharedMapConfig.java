@@ -29,6 +29,9 @@ public final class SharedMapConfig {
 		migrateDefault("tasks.max_tile_renders_per_tick", "16", "2048");
 		migrateDefault("tasks.map_render_budget_ms", "10", "40");
 		migrateDefault("tasks.map_render_budget_ms", "25", "40");
+		migrateDefault("network.max_tile_requests_per_snapshot", "16", "256");
+		migrateDefault("network.bytes_per_player_per_tick", "32768", "262144");
+		migrateDefault("network.global_bytes_per_tick", "262144", "2097152");
 		VALUES.setProperty("protocol.version", Integer.toString(SharedMapProtocolDefaults.PROTOCOL_VERSION));
 		VALUES.setProperty("map.format.version", Integer.toString(SharedMapProtocolDefaults.MAP_FORMAT_VERSION));
 		save(path);
@@ -47,15 +50,15 @@ public final class SharedMapConfig {
 	}
 
 	public static int maxTileRequestsPerSnapshot() {
-		return intValue("network.max_tile_requests_per_snapshot", 16);
+		return intValue("network.max_tile_requests_per_snapshot", 256);
 	}
 
 	public static int bytesPerPlayerPerTick() {
-		return positiveIntValue("network.bytes_per_player_per_tick", 32_768);
+		return positiveIntValue("network.bytes_per_player_per_tick", 262_144);
 	}
 
 	public static int globalBytesPerTick() {
-		return positiveIntValue("network.global_bytes_per_tick", 262_144);
+		return positiveIntValue("network.global_bytes_per_tick", 2_097_152);
 	}
 
 	public static String compression() {
@@ -159,9 +162,9 @@ public final class SharedMapConfig {
 		defaults.setProperty("xaero.adapter.version", SharedMapProtocolDefaults.XAERO_ADAPTER_VERSION);
 		defaults.setProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 		defaults.setProperty("network.max_packet_bytes", Integer.toString(SharedMapProtocolDefaults.MAX_PACKET_BYTES));
-		defaults.setProperty("network.max_tile_requests_per_snapshot", "16");
-		defaults.setProperty("network.bytes_per_player_per_tick", "32768");
-		defaults.setProperty("network.global_bytes_per_tick", "262144");
+		defaults.setProperty("network.max_tile_requests_per_snapshot", "256");
+		defaults.setProperty("network.bytes_per_player_per_tick", "262144");
+		defaults.setProperty("network.global_bytes_per_tick", "2097152");
 		defaults.setProperty("exploration.auto_view_distance", "true");
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");

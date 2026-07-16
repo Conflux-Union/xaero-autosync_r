@@ -16,7 +16,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 public final class ServerTransferManager {
-	private static final int MAX_TRANSFERS_PER_PLAYER = 24;
+	private static final int MAX_TRANSFERS_PER_PLAYER = 256;
 	private static final long RETRY_TIMEOUT_MILLIS = 5_000L;
 	private final NetworkBudgetTracker budget;
 	private final BiConsumer<ServerPlayer, TransferPartPayload> sender;

@@ -33,7 +33,7 @@ final class SharedMapClientTest {
 	}
 
 	@Test
-	void tileRequestsUseBackpressureWhileXaeroAppliesDownloadedTiles() {
+	void tileRequestsUseHighWaterBackpressureWhileXaeroAppliesDownloadedTiles() {
 		assertTrue(SharedMapClient.canRequestTile(15, 32, 16, 64));
 		assertFalse(SharedMapClient.canRequestTile(16, 0, 16, 64));
 		assertFalse(SharedMapClient.canRequestTile(8, 56, 16, 64));

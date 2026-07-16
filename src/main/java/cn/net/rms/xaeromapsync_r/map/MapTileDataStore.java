@@ -21,6 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -49,6 +50,7 @@ public final class MapTileDataStore {
 		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) { return size() > MAX_MEMORY_TILES; }
 	};
 	private ExecutorService[] writers;
+	private ExecutorService recoveryReader;
 	private Path root;
 
 	public synchronized void start(MinecraftServer server) {
@@ -57,6 +59,12 @@ public final class MapTileDataStore {
 
 	public synchronized void start(Path root) {
 		this.root = root;
+		recoveryReader = Executors.newSingleThreadExecutor(runnable -> {
+			Thread thread = new Thread(runnable, "xaero-mapsync-index-recovery");
+			thread.setDaemon(true);
+			thread.setPriority(Thread.MIN_PRIORITY);
+			return thread;
+		});
 		writers = new ExecutorService[WRITER_STRIPES];
 		for (int index = 0; index < writers.length; index++) {
 			int stripe = index;
@@ -239,6 +247,7 @@ public final class MapTileDataStore {
 		int recovered = 0;
 		try (Stream<Path> dimensions = Files.list(activeRoot)) {
 			for (Path dimensionPath : (Iterable<Path>) dimensions.filter(Files::isDirectory)::iterator) {
+				if (Thread.currentThread().isInterrupted()) return recovered;
 				String dimension;
 				try {
 					dimension = new String(Base64.getUrlDecoder().decode(dimensionPath.getFileName().toString()),
@@ -249,19 +258,24 @@ public final class MapTileDataStore {
 				}
 				try (Stream<Path> files = Files.list(dimensionPath)) {
 					for (Path tilePath : (Iterable<Path>) files.filter(Files::isRegularFile)::iterator) {
+						if (Thread.currentThread().isInterrupted()) return recovered;
 						Matcher matcher = TILE_FILE.matcher(tilePath.getFileName().toString());
 						if (!matcher.matches()) continue;
 						try {
 							int chunkX = Integer.parseInt(matcher.group(1));
 							int chunkZ = Integer.parseInt(matcher.group(2));
+							Optional<MapTileIndexEntry> previous = index.find(dimension, chunkX, chunkZ);
+							long modifiedAtMillis = Files.getLastModifiedTime(tilePath).toMillis();
+							if (!shouldReadForRecovery(previous, modifiedAtMillis)) continue;
 							Optional<MapTile> tile = find(dimension, chunkX, chunkZ);
 							if (tile.isPresent()) {
-								Optional<MapTileIndexEntry> previous = index.find(dimension, chunkX, chunkZ);
 								if (previous.isEmpty() || previous.get().contentHash() != tile.get().contentHash()) recovered++;
 								index.upsert(tile.get());
 							}
 						} catch (NumberFormatException exception) {
 							XaeroMapsync_r.LOGGER.warn("Ignoring map tile with invalid coordinates {}", tilePath);
+						} catch (IOException exception) {
+							XaeroMapsync_r.LOGGER.warn("Failed to inspect map tile cache {}", tilePath, exception);
 						}
 					}
 				} catch (IOException exception) {
@@ -274,11 +288,49 @@ public final class MapTileDataStore {
 		return recovered;
 	}
 
+	public boolean recoverIndexAsynchronously(MapTileIndexStore index, Consumer<Integer> completion) {
+		if (index == null || completion == null) {
+			throw new IllegalArgumentException("Index and completion callback are required");
+		}
+		ExecutorService activeReader;
+		synchronized (this) { activeReader = recoveryReader; }
+		if (activeReader == null) return false;
+		try {
+			activeReader.execute(() -> {
+				int recovered = recoverIndex(index);
+				try {
+					completion.accept(recovered);
+				} catch (RuntimeException exception) {
+					XaeroMapsync_r.LOGGER.warn("Map tile index recovery callback failed", exception);
+				}
+			});
+			return true;
+		} catch (RejectedExecutionException exception) {
+			XaeroMapsync_r.LOGGER.warn("Map tile index recovery was rejected", exception);
+			return false;
+		}
+	}
+
+	static boolean shouldReadForRecovery(Optional<MapTileIndexEntry> existing, long fileModifiedAtMillis) {
+		return existing.isEmpty() || fileModifiedAtMillis > existing.get().updatedAtMillis();
+	}
+
 	public void stop() {
 		ExecutorService[] activeWriters;
+		ExecutorService activeRecoveryReader;
 		synchronized (this) {
 			activeWriters = writers;
 			writers = null;
+			activeRecoveryReader = recoveryReader;
+			recoveryReader = null;
+		}
+		if (activeRecoveryReader != null) {
+			activeRecoveryReader.shutdownNow();
+			try {
+				activeRecoveryReader.awaitTermination(1, TimeUnit.SECONDS);
+			} catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+			}
 		}
 		if (activeWriters == null) return;
 		for (ExecutorService activeWriter : activeWriters) activeWriter.shutdown();

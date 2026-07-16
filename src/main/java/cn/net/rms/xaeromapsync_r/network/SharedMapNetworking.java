@@ -6,9 +6,7 @@ import cn.net.rms.xaeromapsync_r.client.ClientTransferManager;
 import cn.net.rms.xaeromapsync_r.client.SharedMapClientConfig;
 import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
-import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
-import cn.net.rms.xaeromapsync_r.map.MapTileHasher;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
 import cn.net.rms.xaeromapsync_r.server.access.SharedMapActor;
 import cn.net.rms.xaeromapsync_r.server.access.SharedMapActors;
@@ -19,6 +17,11 @@ import java.util.Optional;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import cn.net.rms.xaeromapsync_r.map.MerkleNode;
 import cn.net.rms.xaeromapsync_r.map.MerkleNodeAddress;
 import net.fabricmc.api.EnvType;
@@ -39,6 +42,7 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation C2S_WAYPOINT_SNAPSHOT_REQUEST = XaeroMapsync_r.id("c2s_waypoint_snapshot_request");
 	public static final net.minecraft.resources.ResourceLocation C2S_MAP_ROOT_HASH = XaeroMapsync_r.id("c2s_map_root_hash");
 	public static final net.minecraft.resources.ResourceLocation C2S_TILE_REQUEST = XaeroMapsync_r.id("c2s_tile_request");
+	public static final net.minecraft.resources.ResourceLocation C2S_TILE_BATCH_REQUEST = XaeroMapsync_r.id("c2s_tile_batch_request");
 	public static final net.minecraft.resources.ResourceLocation C2S_MAP_NODE_REQUEST = XaeroMapsync_r.id("c2s_map_node_request");
 	public static final net.minecraft.resources.ResourceLocation C2S_LOCAL_TILE_READY = XaeroMapsync_r.id("c2s_local_tile_ready");
 	public static final net.minecraft.resources.ResourceLocation C2S_LOCAL_TILE_DATA = XaeroMapsync_r.id("c2s_local_tile_data");
@@ -46,6 +50,7 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_INDEX_SNAPSHOT = XaeroMapsync_r.id("s2c_map_index_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_MERKLE_SNAPSHOT = XaeroMapsync_r.id("s2c_map_merkle_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_TILE_DATA = XaeroMapsync_r.id("s2c_tile_data");
+	public static final net.minecraft.resources.ResourceLocation S2C_TILE_DATA_BATCH = XaeroMapsync_r.id("s2c_tile_data_batch");
 	public static final net.minecraft.resources.ResourceLocation S2C_TILE_UNAVAILABLE = XaeroMapsync_r.id("s2c_tile_unavailable");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_NODE_RESPONSE = XaeroMapsync_r.id("s2c_map_node_response");
 	public static final net.minecraft.resources.ResourceLocation S2C_TRANSFER_PART = XaeroMapsync_r.id("s2c_transfer_part");
@@ -55,9 +60,18 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_ERROR = XaeroMapsync_r.id("s2c_waypoint_error");
 	private static final int TRANSFER_TYPE_MAP_NODE_RESPONSE = 1;
 	private static final int TRANSFER_TYPE_TILE_DATA = 2;
-	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 2;
+	private static final int TRANSFER_TYPE_TILE_DATA_BATCH = 3;
+	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 32;
 	private static final LocalTileReadyHintLimiter LOCAL_TILE_HINT_LIMITER = new LocalTileReadyHintLimiter();
 	private static final ClientTileUploadLimiter CLIENT_TILE_UPLOAD_LIMITER = new ClientTileUploadLimiter();
+	private static final AtomicInteger TILE_BATCH_WORKER_IDS = new AtomicInteger();
+	private static final ThreadPoolExecutor TILE_BATCH_WORKERS = new ThreadPoolExecutor(2, 2, 0L,
+			TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64), runnable -> {
+				Thread thread = new Thread(runnable,
+						"xaero-mapsync-tile-batch-" + TILE_BATCH_WORKER_IDS.incrementAndGet());
+				thread.setDaemon(true);
+				return thread;
+			}, new ThreadPoolExecutor.AbortPolicy());
 	@Environment(EnvType.CLIENT)
 	public static void tickClientTransfers() { ClientTransfers.MANAGER.tick(System.currentTimeMillis()); }
 
@@ -84,6 +98,10 @@ public final class SharedMapNetworking {
 		ServerPlayNetworking.registerGlobalReceiver(C2S_TILE_REQUEST, (server, player, handler, buffer, responseSender) -> {
 			TileRequestPayload payload = TileRequestPayload.read(buffer);
 			server.execute(() -> runForAcceptedClient(player, () -> sendTileDataIfAvailable(player, payload)));
+		});
+		ServerPlayNetworking.registerGlobalReceiver(C2S_TILE_BATCH_REQUEST, (server, player, handler, buffer, responseSender) -> {
+			TileBatchRequestPayload payload = TileBatchRequestPayload.read(buffer);
+			server.execute(() -> runForAcceptedClient(player, () -> sendTileBatchDataIfAvailable(player, payload)));
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_MAP_NODE_REQUEST, (server, player, handler, buffer, responseSender) -> {
 			MapNodeRequestPayload payload = MapNodeRequestPayload.read(buffer);
@@ -182,6 +200,10 @@ public final class SharedMapNetworking {
 			TileDataPayload payload = TileDataPayload.read(buffer);
 			client.execute(() -> SharedMapClient.handleTileData(payload));
 		});
+		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_DATA_BATCH, (client, handler, buffer, responseSender) -> {
+			TileBatchDataPayload payload = TileBatchDataPayload.read(buffer);
+			client.execute(() -> SharedMapClient.handleTileDataBatch(payload));
+		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_UNAVAILABLE, (client, handler, buffer, responseSender) -> {
 			TileUnavailablePayload payload = TileUnavailablePayload.read(buffer);
 			client.execute(() -> SharedMapClient.handleTileUnavailable(payload));
@@ -202,6 +224,17 @@ public final class SharedMapNetworking {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new TileRequestPayload(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision()).write(buffer);
 		ClientPlayNetworking.send(C2S_TILE_REQUEST, buffer);
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static void requestTiles(Collection<MapTileIndexEntry> entries) {
+		if (entries.isEmpty()) return;
+		List<TileRequestPayload> requests = entries.stream()
+				.map(entry -> new TileRequestPayload(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision()))
+				.toList();
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new TileBatchRequestPayload(requests).write(buffer);
+		ClientPlayNetworking.send(C2S_TILE_BATCH_REQUEST, buffer);
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -416,7 +449,7 @@ public final class SharedMapNetworking {
 		if (LOCAL_TILE_HINT_LIMITER.acquire(player.getUUID(), hint, System.currentTimeMillis())
 				!= LocalTileReadyHintLimiter.Result.ACCEPTED) return;
 		net.minecraft.server.level.ServerLevel level = player.getLevel();
-		if (!validLocalTileContext(player, level, tile) || !matchesLoadedSurface(level, tile)) {
+		if (!validLocalTileContext(player, level, tile)) {
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
 			return;
 		}
@@ -476,15 +509,8 @@ public final class SharedMapNetworking {
 		net.minecraft.world.level.ChunkPos playerChunk = player.chunkPosition();
 		int allowedDistance = Math.max(2,
 				player.getServer().getPlayerList().getViewDistance() + LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS);
-		if (Math.max(Math.abs((long) tile.chunkX() - playerChunk.x),
-				Math.abs((long) tile.chunkZ() - playerChunk.z)) > allowedDistance) return false;
-		return level.getChunkSource().hasChunk(tile.chunkX(), tile.chunkZ());
-	}
-
-	private static boolean matchesLoadedSurface(net.minecraft.server.level.ServerLevel level, MapTile tile) {
-		MapTile verified = MapTileDebugRenderer.renderIfLoaded(level, tile.chunkX(), tile.chunkZ());
-		return verified != null && verified.contentHash() == tile.contentHash()
-				&& MapTileHasher.hashSurface(tile) == tile.contentHash();
+		return Math.max(Math.abs((long) tile.chunkX() - playerChunk.x),
+				Math.abs((long) tile.chunkZ() - playerChunk.z)) <= allowedDistance;
 	}
 
 	private static void sendTileDataIfAvailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request) {
@@ -511,6 +537,70 @@ public final class SharedMapNetworking {
 			sendTileUnavailable(player, request, "Stored tile cannot be encoded and must be regenerated");
 		}
 	}
+
+	private static void sendTileBatchDataIfAvailable(net.minecraft.server.level.ServerPlayer player,
+			TileBatchRequestPayload request) {
+		net.minecraft.server.MinecraftServer server = player.getServer();
+		String compression = SharedMapConfig.compression();
+		try {
+			TILE_BATCH_WORKERS.execute(() -> {
+				List<PreparedTile> prepared = new ArrayList<>(request.requests().size());
+				for (TileRequestPayload tileRequest : request.requests()) {
+					MapTile tile = SharedMapServer.tileData()
+							.find(tileRequest.dimension(), tileRequest.chunkX(), tileRequest.chunkZ()).orElse(null);
+					if (tile == null) {
+						prepared.add(new PreparedTile(tileRequest, null, null));
+						continue;
+					}
+					try {
+						byte[] surface = CompressionCodec.encodeSurface(
+								CompressionCodec.MapTileSurfaceData.fromTile(tile), compression);
+						prepared.add(new PreparedTile(tileRequest, tile, surface));
+					} catch (RuntimeException exception) {
+						prepared.add(new PreparedTile(tileRequest, tile, null));
+					}
+				}
+				try {
+					server.execute(() -> sendPreparedTileBatch(player, prepared, compression));
+				} catch (RejectedExecutionException ignored) {
+					// The server stopped while this bounded background batch was being prepared.
+				}
+			});
+		} catch (RejectedExecutionException exception) {
+			for (TileRequestPayload tileRequest : request.requests()) {
+				sendTileUnavailable(player, tileRequest, "Map tile transfer queue is busy; retrying shortly");
+			}
+		}
+	}
+
+	private static void sendPreparedTileBatch(net.minecraft.server.level.ServerPlayer player,
+			List<PreparedTile> prepared, String compression) {
+		if (player.getServer().getPlayerList().getPlayer(player.getUUID()) != player) return;
+		List<TileDataPayload> available = new ArrayList<>(prepared.size());
+		for (PreparedTile result : prepared) {
+			if (result.tile == null) {
+				if (SharedMapServer.exploredChunks().isExplored(result.request.dimension(),
+						result.request.chunkX(), result.request.chunkZ())) {
+					SharedMapServer.dirtyChunks().prioritizeDiscovered(result.request.dimension(),
+							result.request.chunkX(), result.request.chunkZ());
+					sendTileUnavailable(player, result.request,
+							"Tile is awaiting a client upload or naturally loaded server fallback");
+				} else {
+					sendTileUnavailable(player, result.request, "Tile is not explored");
+				}
+				continue;
+			}
+			if (result.surfacePayload == null) {
+				sendTileUnavailable(player, result.request, "Stored tile cannot be encoded and must be regenerated");
+				continue;
+			}
+			MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(result.tile);
+			available.add(new TileDataPayload(result.tile, entry.revision(), compression, result.surfacePayload));
+		}
+		if (!available.isEmpty()) sendTileDataBatch(player, new TileBatchDataPayload(available));
+	}
+
+	private record PreparedTile(TileRequestPayload request, MapTile tile, byte[] surfacePayload) {}
 
 	/** Pushes newly published tile bodies immediately; Merkle polling remains recovery only. */
 	public static void broadcastTileData(net.minecraft.server.MinecraftServer server, MapTile tile, MapTileIndexEntry entry,
@@ -540,6 +630,21 @@ public final class SharedMapNetworking {
 			return startTransfer(player, envelope, reportBackpressure);
 		}
 		ServerPlayNetworking.send(player, S2C_TILE_DATA, buffer);
+		return true;
+	}
+
+	private static boolean sendTileDataBatch(net.minecraft.server.level.ServerPlayer player,
+			TileBatchDataPayload payload) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		payload.write(buffer);
+		if (buffer.readableBytes() > SharedMapConfig.maxPacketBytes()
+				|| !SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			byte[] envelope = new byte[buffer.readableBytes() + 1];
+			envelope[0] = TRANSFER_TYPE_TILE_DATA_BATCH;
+			buffer.readBytes(envelope, 1, buffer.readableBytes());
+			return startTransfer(player, envelope, true);
+		}
+		ServerPlayNetworking.send(player, S2C_TILE_DATA_BATCH, buffer);
 		return true;
 	}
 
@@ -711,6 +816,11 @@ public final class SharedMapNetworking {
 			if (type == TRANSFER_TYPE_TILE_DATA) {
 				TileDataPayload payload = TileDataPayload.read(buffer);
 				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handleTileData(payload));
+				return;
+			}
+			if (type == TRANSFER_TYPE_TILE_DATA_BATCH) {
+				TileBatchDataPayload payload = TileBatchDataPayload.read(buffer);
+				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handleTileDataBatch(payload));
 				return;
 			}
 			throw new IllegalArgumentException("Unknown transfer envelope type: " + type);

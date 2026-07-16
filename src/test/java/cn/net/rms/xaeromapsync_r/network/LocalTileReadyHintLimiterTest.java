@@ -9,6 +9,12 @@ final class LocalTileReadyHintLimiterTest {
 	private static final UUID PLAYER = UUID.fromString("10000000-0000-0000-0000-000000000001");
 
 	@Test
+	void defaultHintWindowSupportsElytraScaleLocalTileDiscovery() {
+		assertEquals(8192, LocalTileReadyHintLimiter.DEFAULT_MAX_HINTS_PER_WINDOW);
+		assertEquals(1_000L, LocalTileReadyHintLimiter.DEFAULT_DUPLICATE_COOLDOWN_MILLIS);
+	}
+
+	@Test
 	void rejectsDuplicatesAndReleasesThemAfterCooldown() {
 		LocalTileReadyHintLimiter limiter = new LocalTileReadyHintLimiter(10, 1_000L, 500L);
 		LocalTileReadyPayload hint = hint(1, 2, 3L);

@@ -6,6 +6,7 @@ import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
 import cn.net.rms.xaeromapsync_r.network.MapTileIndexSnapshotPayload;
 import cn.net.rms.xaeromapsync_r.network.MapMerkleSnapshotPayload;
+import cn.net.rms.xaeromapsync_r.network.MapNodeRequestPayload;
 import cn.net.rms.xaeromapsync_r.network.MapNodeResponsePayload;
 import cn.net.rms.xaeromapsync_r.map.MerkleNode;
 import cn.net.rms.xaeromapsync_r.map.MerkleNodeAddress;
@@ -13,6 +14,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,6 +26,8 @@ import net.fabricmc.loader.api.FabricLoader;
 import cn.net.rms.xaeromapsync_r.network.ServerHelloPayload;
 import cn.net.rms.xaeromapsync_r.network.SharedMapNetworking;
 import cn.net.rms.xaeromapsync_r.network.TileDataPayload;
+import cn.net.rms.xaeromapsync_r.network.TileBatchDataPayload;
+import cn.net.rms.xaeromapsync_r.network.TileBatchRequestPayload;
 import cn.net.rms.xaeromapsync_r.network.TileUnavailablePayload;
 import cn.net.rms.xaeromapsync_r.network.WaypointSnapshotPayload;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
@@ -58,20 +62,22 @@ public final class SharedMapClient {
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
 	private static final Set<Long> PENDING_MAP_REQUEST_IDS = new HashSet<>();
-	private static final int MAX_PENDING_TILE_APPLIES = 1024;
-	private static final int MAX_CACHE_LOOKUPS_IN_FLIGHT = 32;
-	private static final int MAX_TILE_APPLIES_PER_TICK = 24;
-	private static final long TILE_APPLY_BUDGET_NANOS = 8_000_000L;
+	private static final int MAX_PENDING_TILE_APPLIES = 8192;
+	private static final int MAX_CACHE_LOOKUPS_IN_FLIGHT = 256;
+	private static final int MAX_MAP_NODE_REQUESTS_IN_FLIGHT = 16;
+	private static final int MAX_TILE_APPLIES_PER_TICK = 4096;
+	private static final long TILE_APPLY_BUDGET_NANOS = 25_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
-	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 1_000L;
-	private static final long LOCAL_TILE_HINT_COOLDOWN_MILLIS = 300_000L;
-	private static final int LOCAL_TILE_UPLOAD_RADIUS = 12;
-	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 64;
-	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 5;
-	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 8_000_000L;
+	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 250L;
+	private static final long LOCAL_TILE_HINT_COOLDOWN_MILLIS = 2_000L;
+	private static final int LOCAL_TILE_UPLOAD_RADIUS = 24;
+	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 512;
+	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 1;
+	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 25_000_000L;
 	private static int tileRequestsInFlight;
 	private static int tileCacheLookupsInFlight;
+	private static boolean handlingTileDataBatch;
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
 	private static int clientTicks;
@@ -204,7 +210,7 @@ public final class SharedMapClient {
 				removeQueuedRevisionAtMost(key, appliedRevision);
 				PENDING_TILE_APPLIES.remove(key);
 			}
-			pumpTileRequests();
+			if (!handlingTileDataBatch) pumpTileRequests();
 			return;
 		}
 		QUEUED_TILE_REVISIONS.merge(key, payload.revision(), Math::max);
@@ -215,12 +221,22 @@ public final class SharedMapClient {
 			return;
 		}
 		lastMapProgressMillis = System.currentTimeMillis();
-		pumpTileRequests();
+		if (!handlingTileDataBatch) pumpTileRequests();
 		XaeroMapsync_r.LOGGER.debug("Queued tile data {} {} {} revision={}",
 				payload.tile().dimension(),
 				payload.tile().chunkX(),
 				payload.tile().chunkZ(),
 				payload.revision());
+	}
+
+	public static void handleTileDataBatch(TileBatchDataPayload payload) {
+		handlingTileDataBatch = true;
+		try {
+			for (TileDataPayload tile : payload.tiles()) handleTileData(tile);
+		} finally {
+			handlingTileDataBatch = false;
+		}
+		pumpTileRequests();
 	}
 
 	private static boolean enqueuePendingTileApply(String key, MapTile tile, long revision) {
@@ -255,11 +271,10 @@ public final class SharedMapClient {
 		long now = System.currentTimeMillis();
 		long deadline = System.nanoTime() + TILE_APPLY_BUDGET_NANOS;
 		int inspected = TILE_APPLY_QUEUE.size();
-		int attempted = 0;
-		Integer batchRegionX = null;
-		Integer batchRegionZ = null;
-		List<PendingTileApply> remoteBatch = new ArrayList<>();
-		while (inspected-- > 0 && attempted < MAX_TILE_APPLIES_PER_TICK && !TILE_APPLY_QUEUE.isEmpty()) {
+		int selected = 0;
+		Map<Long, List<PendingTileApply>> remoteBatches = new LinkedHashMap<>();
+		while (inspected-- > 0 && selected < MAX_TILE_APPLIES_PER_TICK && !TILE_APPLY_QUEUE.isEmpty()
+				&& System.nanoTime() < deadline) {
 			PendingTileApply pending = TILE_APPLY_QUEUE.removeFirst();
 			if (pending.retryAtMillis > now) {
 				TILE_APPLY_QUEUE.addLast(pending);
@@ -277,19 +292,22 @@ public final class SharedMapClient {
 			}
 			int regionX = Math.floorDiv(pending.tile.chunkX(), 32);
 			int regionZ = Math.floorDiv(pending.tile.chunkZ(), 32);
-			if (batchRegionX != null && (batchRegionX != regionX || batchRegionZ != regionZ)) {
-				TILE_APPLY_QUEUE.addLast(pending);
-				continue;
-			}
-			batchRegionX = regionX;
-			batchRegionZ = regionZ;
-			remoteBatch.add(pending);
-			attempted++;
-			if (System.nanoTime() >= deadline) break;
+			long regionKey = (((long) regionX) << 32) ^ (regionZ & 0xffffffffL);
+			remoteBatches.computeIfAbsent(regionKey, ignored -> new ArrayList<>()).add(pending);
+			selected++;
 		}
-		if (!remoteBatch.isEmpty()) {
+		var batchIterator = remoteBatches.values().iterator();
+		boolean appliedBatch = false;
+		while (batchIterator.hasNext()) {
+			List<PendingTileApply> remoteBatch = batchIterator.next();
+			if (appliedBatch && System.nanoTime() >= deadline) {
+				TILE_APPLY_QUEUE.addAll(remoteBatch);
+				batchIterator.forEachRemaining(TILE_APPLY_QUEUE::addAll);
+				break;
+			}
 			XaeroMapAdapter.ApplyResult result = mapAdapter.applyBatchResult(remoteBatch.stream()
 					.map(PendingTileApply::tile).toList());
+			appliedBatch = true;
 			if (result == XaeroMapAdapter.ApplyResult.APPLIED) {
 				remoteBatch.forEach(SharedMapClient::completeTileApply);
 			} else if (result == XaeroMapAdapter.ApplyResult.RETRY_LATER) {
@@ -350,10 +368,10 @@ public final class SharedMapClient {
 				}
 			}
 		}
-		if (LOCAL_TILE_HINT_TIMES.size() > 4_096) {
+		if (LOCAL_TILE_HINT_TIMES.size() > 65_536) {
 			LOCAL_TILE_HINT_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_HINT_COOLDOWN_MILLIS);
 		}
-		if (LOCAL_TILE_SCAN_TIMES.size() > 4_096) {
+		if (LOCAL_TILE_SCAN_TIMES.size() > 65_536) {
 			LOCAL_TILE_SCAN_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_SCAN_COOLDOWN_MILLIS);
 		}
 	}
@@ -528,16 +546,21 @@ public final class SharedMapClient {
 		int limit = SharedMapConfig.maxTileRequestsPerSnapshot();
 		while (canRequestTile(tileRequestsInFlight, TILE_APPLY_QUEUE.size(), limit, MAX_PENDING_TILE_APPLIES)
 				&& !TILE_REQUEST_QUEUE.isEmpty()) {
-			MapTileIndexEntry entry = TILE_REQUEST_QUEUE.remove();
-			String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
-			Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
-			if (targetRevision == null || targetRevision != entry.revision()) continue;
-			Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.get(key);
-			if (requestedRevision != null) continue;
-			SharedMapNetworking.requestTile(entry);
-			IN_FLIGHT_TILE_REQUESTS.put(key, entry.revision());
-			tileRequestsInFlight++;
-			lastMapProgressMillis = System.currentTimeMillis();
+			List<MapTileIndexEntry> batch = new ArrayList<>(TileBatchRequestPayload.MAX_REQUESTS);
+			while (canRequestTile(tileRequestsInFlight, TILE_APPLY_QUEUE.size(), limit, MAX_PENDING_TILE_APPLIES)
+					&& !TILE_REQUEST_QUEUE.isEmpty() && batch.size() < TileBatchRequestPayload.MAX_REQUESTS) {
+				MapTileIndexEntry entry = TILE_REQUEST_QUEUE.remove();
+				String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
+				Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
+				if (targetRevision == null || targetRevision != entry.revision()) continue;
+				Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.get(key);
+				if (requestedRevision != null) continue;
+				batch.add(entry);
+				IN_FLIGHT_TILE_REQUESTS.put(key, entry.revision());
+				tileRequestsInFlight++;
+				lastMapProgressMillis = System.currentTimeMillis();
+			}
+			if (!batch.isEmpty()) SharedMapNetworking.requestTiles(batch);
 		}
 		markRootCompleteIfIdle();
 	}
@@ -547,9 +570,11 @@ public final class SharedMapClient {
 	}
 
 	private static void pumpMapNodeRequests() {
-		while (mapNodeRequestsInFlight < 4 && !MAP_NODE_QUEUE.isEmpty()) {
-			List<MerkleNodeAddress> batch = new ArrayList<>(64);
-			while (batch.size() < 64 && !MAP_NODE_QUEUE.isEmpty()) batch.add(MAP_NODE_QUEUE.remove());
+		while (mapNodeRequestsInFlight < MAX_MAP_NODE_REQUESTS_IN_FLIGHT && !MAP_NODE_QUEUE.isEmpty()) {
+			List<MerkleNodeAddress> batch = new ArrayList<>(MapNodeRequestPayload.MAX_REQUESTS);
+			while (batch.size() < MapNodeRequestPayload.MAX_REQUESTS && !MAP_NODE_QUEUE.isEmpty()) {
+				batch.add(MAP_NODE_QUEUE.remove());
+			}
 			long requestId = nextMapRequestId();
 			PENDING_MAP_REQUEST_IDS.add(requestId);
 			mapNodeRequestsInFlight = PENDING_MAP_REQUEST_IDS.size();

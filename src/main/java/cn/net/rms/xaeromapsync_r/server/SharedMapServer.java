@@ -60,6 +60,7 @@ public final class SharedMapServer {
 			cn.net.rms.xaeromapsync_r.network.SharedMapNetworking::sendTransferPart);
 	private static int persistenceTicks;
 	private static int teamVisibilityTicks;
+	private static volatile boolean stopping;
 
 	private SharedMapServer() {
 	}
@@ -87,20 +88,27 @@ public final class SharedMapServer {
 			}
 		});
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			stopping = false;
 			TILE_DATA.start(server);
 			WAYPOINTS.load(server);
 			EXPLORED_CHUNKS.load(server);
 			DIRTY_CHUNKS.load(server);
 			MAP_TILES.load(server);
-			int recoveredTiles = TILE_DATA.recoverIndex(MAP_TILES);
-			if (recoveredTiles > 0) {
-				XaeroMapsync_r.LOGGER.info("Recovered map tile index from {} cached tiles", recoveredTiles);
-				MAP_TILES.save(server);
-			}
-			queueStartupMapWork(server);
 			ACCESS.load(server);
+			boolean recoveryStarted = TILE_DATA.recoverIndexAsynchronously(MAP_TILES, recoveredTiles -> {
+				if (stopping) return;
+				server.execute(() -> {
+					if (stopping) return;
+					XaeroMapsync_r.LOGGER.info("Completed map tile index recovery; updated {} cached tiles",
+							recoveredTiles);
+					if (recoveredTiles > 0) MAP_TILES.save(server);
+					queueStartupMapWork(server);
+				});
+			});
+			if (!recoveryStarted) queueStartupMapWork(server);
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			stopping = true;
 			TRANSFERS.clear();
 			TILE_DATA.stop();
 			WAYPOINTS.save(server);
