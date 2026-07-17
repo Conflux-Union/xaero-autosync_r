@@ -44,6 +44,7 @@ public final class SharedMapServer {
 	private static final MapTileDataStore TILE_DATA = new MapTileDataStore();
 	private static final MapPatchCatalog PATCHES = new MapPatchCatalog(MAP_TILES, TILE_DATA);
 	private static final NetworkBudgetTracker NETWORK_BUDGET = new NetworkBudgetTracker();
+	private static final GapRecoveryBroker GAP_RECOVERY = new GapRecoveryBroker();
 	private static final SharedMapAccessManager ACCESS = new SharedMapAccessManager();
 	private static final SharedMapPermissionPolicy PERMISSIONS = new SharedMapPermissionPolicy(ACCESS.regions());
 	private static final RegionActivityThresholds ACTIVITY_THRESHOLDS = new RegionActivityThresholds(
@@ -72,16 +73,19 @@ public final class SharedMapServer {
 		NETWORK_BUDGET.setBytesPerPlayerPerTick(SharedMapConfig.bytesPerPlayerPerTick());
 		NETWORK_BUDGET.setGlobalBytesPerTick(SharedMapConfig.globalBytesPerTick());
 		XaeroMapsync_r.LOGGER.info(
-				"Registering shared map server: bytesPerPlayerPerTick={} globalBytesPerTick={} maxPacketBytes={} compression={} protocol={} mapFormat={}",
+				"Registering shared map server: bytesPerPlayerPerTick={} globalBytesPerTick={} maxPacketBytes={} compression={} protocol={} mapFormat={} serverRenderEnabled={}",
 				SharedMapConfig.bytesPerPlayerPerTick(), SharedMapConfig.globalBytesPerTick(),
 				SharedMapConfig.maxPacketBytes(), SharedMapConfig.compression(),
-				SharedMapConfig.protocolVersion(), SharedMapConfig.mapFormatVersion());
+				SharedMapConfig.protocolVersion(), SharedMapConfig.mapFormatVersion(),
+				SharedMapConfig.serverMapRenderingEnabled());
 		SharedMapCommands.register();
 		ExplorationTracker.register();
 		MAP_TASKS.register();
 		TRANSFERS.register();
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			flushRegionActivity();
+			cn.net.rms.xaeromapsync_r.network.SharedMapNetworking.expireGapRecoveries(server,
+					System.currentTimeMillis());
 			if (++teamVisibilityTicks >= 20) {
 				teamVisibilityTicks = 0;
 				refreshChangedTeamVisibility(server);
@@ -124,6 +128,7 @@ public final class SharedMapServer {
 					acceptedClientCount(), WAYPOINTS.activeCount(), EXPLORED_CHUNKS.totalCount(),
 					DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount());
 			TRANSFERS.clear();
+			GAP_RECOVERY.clear();
 			TILE_DATA.stop();
 			WAYPOINTS.save(server);
 			EXPLORED_CHUNKS.save(server);
@@ -138,6 +143,7 @@ public final class SharedMapServer {
 			XaeroMapsync_r.LOGGER.info("Shared map client disconnected: {} acceptedBeforeDisconnect={}",
 					handler.player.getGameProfile().getName(), hasAcceptedClient(handler.player.getUUID()));
 			TRANSFERS.cancelPlayer(handler.player.getUUID());
+			GAP_RECOVERY.removeRequester(handler.player.getUUID());
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
 			TRACE_UNTIL_MILLIS.remove(handler.player.getUUID());
@@ -145,6 +151,12 @@ public final class SharedMapServer {
 	}
 
 	private static void queueStartupMapWork(net.minecraft.server.MinecraftServer server) {
+		if (!SharedMapConfig.serverMapRenderingEnabled()) {
+			XaeroMapsync_r.LOGGER.info(
+					"map_sync event=server_render_disabled action=client_xaero_uploads_only dirty_chunks_preserved={} indexed_tiles={}",
+					DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount());
+			return;
+		}
 		int missingExplored = StartupMapWorkPlanner.queueMissingExploredChunks(
 				EXPLORED_CHUNKS.snapshot(), MAP_TILES, DIRTY_CHUNKS);
 		boolean resample = MAP_TILES.requiresSurfaceResample();
@@ -271,6 +283,8 @@ public final class SharedMapServer {
 		return NETWORK_BUDGET;
 	}
 
+	public static GapRecoveryBroker gapRecovery() { return GAP_RECOVERY; }
+
 	public static MapTaskScheduler mapTasks() {
 		return MAP_TASKS;
 	}
@@ -280,7 +294,7 @@ public final class SharedMapServer {
 	public static SharedMapAccessManager access() { return ACCESS; }
 
 	public static synchronized void recordBlockChange(String dimension, BlockPos pos) {
-		DIRTY_CHUNKS.markDirty(dimension, pos);
+		if (SharedMapConfig.serverMapRenderingEnabled()) DIRTY_CHUNKS.markDirty(dimension, pos);
 		TickActivity tick = activityAt(dimension, pos.getX(), pos.getZ());
 		tick.blockChanges = incrementUpTo(tick.blockChanges, ACTIVITY_THRESHOLDS.blockChanges());
 		tick.dirtyChunks.add(ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));
