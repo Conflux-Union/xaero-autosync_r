@@ -188,8 +188,8 @@ public final class MapTileDataStore {
 
 	public synchronized boolean hasWriteCapacity(String dimension, int chunkX, int chunkZ) {
 		ExecutorService writer = writerFor(dimension, chunkX, chunkZ);
-		return writer instanceof ThreadPoolExecutor
-				&& ((ThreadPoolExecutor) writer).getQueue().remainingCapacity() > 0;
+		if (!(writer instanceof ThreadPoolExecutor executor)) return false;
+		return executor.getQueue().remainingCapacity() > 0;
 	}
 
 	/**

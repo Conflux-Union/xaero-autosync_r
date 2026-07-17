@@ -1066,9 +1066,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					xaeroTiles.add(createTile(tile, processor, biomeKeyManager, minecraft));
 				}
 				XaeroMapsync_r.LOGGER.debug(
-						"Created Xaero tile objects for apply dimension={} batchSize={} originalRegionLoadState={} originalBeingWritten={} originalRefreshing={} originalShouldCache={} originalRecacheRequested={}",
+						"Created Xaero tile objects for apply dimension={} batchSize={} originalRegionLoadState={} originalBeingWritten={} originalShouldCache={} originalRecacheRequested={}",
 						source.dimension(), sources.size(), originalRegionLoadState, originalBeingWritten,
-						originalRefreshing, originalShouldCache, originalRecacheRequested);
+						originalShouldCache, originalRecacheRequested);
 				for (int index = 0; index < sources.size(); index++) {
 					MapTile tile = sources.get(index);
 					int tileChunkX = tileChunkCoordinate(tile.chunkX());
