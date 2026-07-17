@@ -26,6 +26,7 @@ public final class AtomicMapSyncClient {
 	private static final int SUMMARY_TICKS = 200;
 	private static final long PATCH_REQUEST_TIMEOUT_MILLIS = 15_000L;
 	private static final int MAX_PATCH_RETRIES = 5;
+	private static final int MAX_APPLIED_PATCH_HASHES = 16_384;
 	private final ClientMapTileCache cache = new ClientMapTileCache();
 	private final XaeroMapAdapter adapter;
 	private final AtomicPatchCoordinator coordinator;
@@ -35,7 +36,7 @@ public final class AtomicMapSyncClient {
 	private final Map<MapPatchKey, Long> inFlightSince = new LinkedHashMap<>();
 	private final Map<MapPatchKey, Long> retryNotBefore = new LinkedHashMap<>();
 	private final Map<MapPatchKey, Integer> retryAttempts = new LinkedHashMap<>();
-	private final Map<MapPatchKey, Long> appliedHashes = new LinkedHashMap<>();
+	private final Map<MapPatchKey, Long> appliedHashes = SharedMapClient.boundedAccessMap(MAX_APPLIED_PATCH_HASHES);
 	private boolean connected;
 	private long syncId;
 	private long epoch;

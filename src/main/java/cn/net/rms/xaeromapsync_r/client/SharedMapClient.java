@@ -45,6 +45,9 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.TranslatableComponent;
 
 public final class SharedMapClient {
+	private static final int MAX_LOCAL_HINT_ENTRIES = 4_096;
+	private static final int MAX_LOCAL_UPLOAD_HASH_ENTRIES = 16_384;
+	private static final int MAX_PENDING_TILE_TARGETS = 8_192;
 	private static boolean connectedToSharedMapServer;
 	private static final ClientWaypointCache WAYPOINTS = new ClientWaypointCache();
 	private static final ClientMapTileIndexCache MAP_TILES = new ClientMapTileIndexCache();
@@ -54,10 +57,9 @@ public final class SharedMapClient {
 	private static final ArrayDeque<MapTileIndexEntry> TILE_REQUEST_QUEUE = new ArrayDeque<>();
 	private static final Map<String, Long> QUEUED_TILE_REVISIONS = new HashMap<>();
 	private static final Map<String, Long> IN_FLIGHT_TILE_REQUESTS = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_REVISIONS = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_HINT_TIMES = new HashMap<>();
+	private static final Map<String, Long> LOCAL_TILE_HINT_TIMES = boundedAccessMap(MAX_LOCAL_HINT_ENTRIES);
 	private static final Map<String, Long> LOCAL_TILE_SCAN_TIMES = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_UPLOAD_HASHES = new HashMap<>();
+	private static final Map<String, Long> LOCAL_TILE_UPLOAD_HASHES = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
 	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
@@ -65,8 +67,8 @@ public final class SharedMapClient {
 	private static final int MAX_PENDING_TILE_APPLIES = 8192;
 	private static final int MAX_CACHE_LOOKUPS_IN_FLIGHT = 256;
 	private static final int MAX_MAP_NODE_REQUESTS_IN_FLIGHT = 16;
-	private static final int MAX_TILE_APPLIES_PER_TICK = 4096;
-	private static final long TILE_APPLY_BUDGET_NANOS = 25_000_000L;
+	private static final int MAX_TILE_APPLIES_PER_TICK = 256;
+	private static final long TILE_APPLY_BUDGET_NANOS = 4_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
 	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 100L;
@@ -122,6 +124,7 @@ public final class SharedMapClient {
 			clientTicks++;
 			SharedMapNetworking.tickClientTransfers();
 			handleConfigChanges();
+			processPendingTileApplications();
 			atomicMapSyncClient.tick();
 			sanitizeWaypointsIfNeeded();
 		});
@@ -210,15 +213,20 @@ public final class SharedMapClient {
 			return;
 		}
 		TILE_DATA.cache(payload.tile(), payload.revision());
-		Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.get(key);
-		if (requestedRevision != null && payload.revision() >= requestedRevision) {
-			IN_FLIGHT_TILE_REQUESTS.remove(key);
-			tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
-		}
+		Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.remove(key);
+		if (requestedRevision != null) tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
 		TILE_REQUEST_QUEUE.removeIf(entry -> tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ()).equals(key)
 				&& entry.revision() <= payload.revision());
 		MAP_TILES.upsert(new MapTileIndexEntry(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ(),
 				payload.tile().contentHash(), payload.revision(), System.currentTimeMillis()));
+		if (isStaleTileResponse(requestedRevision, payload.revision())) {
+			MAP_TILES.find(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ())
+					.filter(entry -> entry.revision() >= requestedRevision)
+					.ifPresent(entry -> enqueueTileRequestFirst(key, entry));
+			XaeroMapsync_r.LOGGER.debug(
+					"Released stale tile response slot and requeued latest revision key={} requestedRevision={} receivedRevision={}",
+					key, requestedRevision, payload.revision());
+		}
 		COMPLETED_MAP_ROOTS.remove(payload.tile().dimension());
 		if (mapAdapter == null || !mapAdapter.isAvailable()) {
 			resetMapQueues();
@@ -319,6 +327,10 @@ public final class SharedMapClient {
 		return pendingRevision <= appliedRevision;
 	}
 
+	static boolean isStaleTileResponse(Long requestedRevision, long receivedRevision) {
+		return requestedRevision != null && receivedRevision < requestedRevision;
+	}
+
 	private static void processPendingTileApplications() {
 		if (TILE_APPLY_QUEUE.isEmpty() || mapAdapter == null || !mapAdapter.isAvailable()) return;
 		long now = System.currentTimeMillis();
@@ -408,7 +420,6 @@ public final class SharedMapClient {
 	}
 
 	private static void completeLocalTile(PendingTileApply pending) {
-		LOCAL_TILE_REVISIONS.merge(pending.key, pending.revision, Math::max);
 		PENDING_TILE_APPLIES.remove(pending.key);
 		removeQueuedRevisionAtMost(pending.key, pending.revision);
 		lastMapProgressMillis = System.currentTimeMillis();
@@ -593,12 +604,19 @@ public final class SharedMapClient {
 	private static void enqueueTiles(Iterable<MapTileIndexEntry> entries) {
 		int inspected = 0;
 		int queued = 0;
+		int deferred = 0;
 		for (MapTileIndexEntry entry : entries) {
 			inspected++;
 			String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
 			if (TILE_DATA.hasRevision(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision())) continue;
 			Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
 			if (targetRevision == null || entry.revision() > targetRevision) {
+				if (targetRevision == null && !canTrackTileTarget(QUEUED_TILE_REVISIONS.size(), MAX_PENDING_TILE_TARGETS)) {
+					mapSyncIncomplete = true;
+					retryMapSyncAtMillis = System.currentTimeMillis() + 5_000L;
+					deferred++;
+					continue;
+				}
 				QUEUED_TILE_REVISIONS.put(key, entry.revision());
 				TILE_CACHE_LOOKUP_QUEUE.add(entry);
 				queued++;
@@ -606,8 +624,8 @@ public final class SharedMapClient {
 		}
 		if (inspected > 0) {
 			XaeroMapsync_r.LOGGER.debug(
-					"Enqueued tile cache lookups inspected={} queued={} lookupQueue={} requestQueue={} targetRevisions={}",
-					inspected, queued, TILE_CACHE_LOOKUP_QUEUE.size(), TILE_REQUEST_QUEUE.size(),
+					"Enqueued tile cache lookups inspected={} queued={} deferred={} lookupQueue={} requestQueue={} targetRevisions={}",
+					inspected, queued, deferred, TILE_CACHE_LOOKUP_QUEUE.size(), TILE_REQUEST_QUEUE.size(),
 					QUEUED_TILE_REVISIONS.size());
 		}
 		pumpTileCacheLookups();
@@ -665,7 +683,7 @@ public final class SharedMapClient {
 	}
 
 	private static void pumpTileRequests() {
-		int limit = SharedMapConfig.maxTileRequestsPerSnapshot();
+		int limit = Math.min(SharedMapConfig.maxTileRequestsPerSnapshot(), MAX_PENDING_TILE_TARGETS);
 		while (canRequestTile(tileRequestsInFlight, TILE_APPLY_QUEUE.size(), limit, MAX_PENDING_TILE_APPLIES)
 				&& !TILE_REQUEST_QUEUE.isEmpty()) {
 			List<MapTileIndexEntry> batch = new ArrayList<>(TileBatchRequestPayload.MAX_REQUESTS);
@@ -694,6 +712,17 @@ public final class SharedMapClient {
 
 	static boolean canRequestTile(int inFlight, int pendingApplies, int requestLimit, int maxPendingApplies) {
 		return inFlight < requestLimit && inFlight + pendingApplies < maxPendingApplies;
+	}
+
+	static boolean canTrackTileTarget(int trackedTargets, int limit) {
+		return trackedTargets < limit;
+	}
+
+	private static void enqueueTileRequestFirst(String key, MapTileIndexEntry entry) {
+		boolean alreadyQueued = TILE_REQUEST_QUEUE.stream().anyMatch(candidate ->
+				tileKey(candidate.dimension(), candidate.chunkX(), candidate.chunkZ()).equals(key)
+						&& candidate.revision() >= entry.revision());
+		if (!alreadyQueued) TILE_REQUEST_QUEUE.addFirst(entry);
 	}
 
 	private static void pumpMapNodeRequests() {
@@ -740,6 +769,15 @@ public final class SharedMapClient {
 	private static long incrementNonZero(long value) {
 		long next = value + 1L;
 		return next == 0L ? 1L : next;
+	}
+
+	static <K, V> Map<K, V> boundedAccessMap(int maximumSize) {
+		return new LinkedHashMap<>(Math.min(maximumSize, 256), 0.75F, true) {
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+				return size() > maximumSize;
+			}
+		};
 	}
 
 	private static String tileKey(String dimension, int chunkX, int chunkZ) {
@@ -976,7 +1014,6 @@ public final class SharedMapClient {
 		QUEUED_TILE_REVISIONS.clear();
 		IN_FLIGHT_TILE_REQUESTS.clear();
 		PENDING_TILE_APPLIES.clear();
-		LOCAL_TILE_REVISIONS.clear();
 		LOCAL_TILE_HINT_TIMES.clear();
 		LOCAL_TILE_SCAN_TIMES.clear();
 		LOCAL_TILE_UPLOAD_HASHES.clear();

@@ -46,6 +46,7 @@ public final class MapTileDataStore {
 	private static final int WRITER_STRIPES = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
 	private static final int MAX_PENDING_WRITES_PER_STRIPE = 256;
 	private static final Pattern TILE_FILE = Pattern.compile("(-?\\d+)_(-?\\d+)\\.tile");
+	private static final Pattern STAGED_TILE_FILE = Pattern.compile("-?\\d+_-?\\d+\\.tile\\.stage-[0-9a-fA-F-]{36}");
 	private final Map<String, MapTile> memory = new LinkedHashMap<>(128, 0.75F, true) {
 		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) { return size() > MAX_MEMORY_TILES; }
 	};
@@ -259,7 +260,17 @@ public final class MapTileDataStore {
 				try (Stream<Path> files = Files.list(dimensionPath)) {
 					for (Path tilePath : (Iterable<Path>) files.filter(Files::isRegularFile)::iterator) {
 						if (Thread.currentThread().isInterrupted()) return recovered;
-						Matcher matcher = TILE_FILE.matcher(tilePath.getFileName().toString());
+						String fileName = tilePath.getFileName().toString();
+						if (STAGED_TILE_FILE.matcher(fileName).matches()) {
+							try {
+								Files.deleteIfExists(tilePath);
+								XaeroMapsync_r.LOGGER.debug("Removed orphaned staged map tile {}", tilePath);
+							} catch (IOException exception) {
+								XaeroMapsync_r.LOGGER.warn("Failed to remove orphaned staged map tile {}", tilePath, exception);
+							}
+							continue;
+						}
+						Matcher matcher = TILE_FILE.matcher(fileName);
 						if (!matcher.matches()) continue;
 						try {
 							int chunkX = Integer.parseInt(matcher.group(1));

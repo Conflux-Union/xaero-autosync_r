@@ -24,6 +24,7 @@ import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 public final class MapTaskScheduler {
 	private static final double EWMA_ALPHA = 0.1D;
 	private static final int SAMPLE_WINDOW = 1200;
+	private static final long INITIAL_MAP_WORK_BUDGET_NANOS = 1_000_000L;
 	private final DirtyChunkStore dirtyChunks;
 	private final MapTileIndexStore mapTiles;
 	private final MapTileDataStore tileData;
@@ -109,7 +110,8 @@ public final class MapTaskScheduler {
 			long previousMapWorkNanos, long targetTickNanos, long configuredBudgetNanos) {
 		long currentRemaining = remainingNanos(targetTickNanos, currentTickElapsedNanos);
 		long configured = Math.max(0L, configuredBudgetNanos);
-		if (previousTickNanos <= 0L) return Math.min(configured, currentRemaining);
+		if (previousTickNanos <= 0L)
+			return Math.min(INITIAL_MAP_WORK_BUDGET_NANOS, Math.min(configured, currentRemaining));
 		long previousBaseWork = Math.max(0L, previousTickNanos - Math.max(0L, previousMapWorkNanos));
 		long previousRemaining = remainingNanos(targetTickNanos, previousBaseWork);
 		return Math.min(configured, Math.min(currentRemaining, previousRemaining));

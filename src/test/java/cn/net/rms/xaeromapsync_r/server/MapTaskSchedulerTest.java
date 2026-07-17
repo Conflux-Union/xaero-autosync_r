@@ -40,11 +40,13 @@ final class MapTaskSchedulerTest {
 	}
 
 	@Test
-	void firstTickBudgetStillHonorsConfiguredAndCurrentLimits() {
-		assertEquals(10 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+	void firstTickBudgetUsesAOneMillisecondSoftStart() {
+		assertEquals(1 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				20 * MILLIS, 0L, 0L, 45 * MILLIS, 10 * MILLIS));
-		assertEquals(5 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+		assertEquals(1 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				40 * MILLIS, 0L, 0L, 45 * MILLIS, 25 * MILLIS));
+		assertEquals(500_000L, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+				20 * MILLIS, 0L, 0L, 45 * MILLIS, 500_000L));
 	}
 
 }

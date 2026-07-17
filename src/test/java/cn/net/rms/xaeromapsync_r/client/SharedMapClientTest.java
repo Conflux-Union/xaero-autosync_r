@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import cn.net.rms.xaeromapsync_r.xaero.XaeroMapAdapter;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -73,6 +74,33 @@ final class SharedMapClientTest {
 	void localTileUploadsFollowClientRenderDistanceInsteadOfHistoricalMapRadius() {
 		assertEquals(3, SharedMapClient.localTileUploadRadius(2));
 		assertEquals(13, SharedMapClient.localTileUploadRadius(12));
+	}
+
+	@Test
+	void staleTileResponsesReleaseTheirRequestSlotAndRequireTheLatestRevisionAgain() {
+		assertTrue(SharedMapClient.isStaleTileResponse(12L, 11L));
+		assertFalse(SharedMapClient.isStaleTileResponse(12L, 12L));
+		assertFalse(SharedMapClient.isStaleTileResponse(null, 11L));
+	}
+
+	@Test
+	void tileTargetAdmissionStopsAtTheConfiguredHardLimit() {
+		assertTrue(SharedMapClient.canTrackTileTarget(8_191, 8_192));
+		assertFalse(SharedMapClient.canTrackTileTarget(8_192, 8_192));
+	}
+
+	@Test
+	void localMetadataCacheEvictsLeastRecentlyUsedEntries() {
+		Map<Integer, Integer> cache = SharedMapClient.boundedAccessMap(2);
+		cache.put(1, 1);
+		cache.put(2, 2);
+		assertEquals(1, cache.get(1));
+		cache.put(3, 3);
+
+		assertTrue(cache.containsKey(1));
+		assertFalse(cache.containsKey(2));
+		assertTrue(cache.containsKey(3));
+		assertEquals(2, cache.size());
 	}
 
 	@Test
